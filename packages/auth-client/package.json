@@ -1,0 +1,108 @@
+{
+  "name": "@musikhood-dev/auth-client",
+  "version": "0.1.0",
+  "description": "Auth client for browser apps. Cookies + automatic refresh + React and Vue 3 adapters built on TanStack Query.",
+  "license": "MIT",
+  "author": "Musikhood",
+  "homepage": "https://github.com/musikhood/auth-client#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/musikhood/auth-client.git",
+    "directory": "packages/auth-client"
+  },
+  "bugs": {
+    "url": "https://github.com/musikhood/auth-client/issues"
+  },
+  "keywords": [
+    "auth",
+    "authentication",
+    "jwt",
+    "refresh-token",
+    "react",
+    "vue",
+    "tanstack-query",
+    "musikhood"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.mjs",
+      "require": "./dist/react.cjs"
+    },
+    "./vue": {
+      "types": "./dist/vue.d.ts",
+      "import": "./dist/vue.mjs",
+      "require": "./dist/vue.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "mitt": "^3.0.1"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "@tanstack/vue-query": "^5.0.0",
+    "react": ">=18.2.0",
+    "react-dom": ">=18.2.0",
+    "vue": ">=3.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "@tanstack/vue-query": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "@tanstack/vue-query": "^5.59.0",
+    "@testing-library/dom": "^10.4.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "happy-dom": "^15.7.4",
+    "msw": "^2.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4",
+    "vue": "^3.5.12"
+  }
+}
