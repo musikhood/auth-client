@@ -1,7 +1,7 @@
 {
   "name": "auth-client-monorepo",
   "private": false,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Monorepo for @musikhood-dev/auth-client",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
