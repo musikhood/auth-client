@@ -1,26 +1,21 @@
-import { useMemo } from 'react'
+import { useContext, useMemo } from 'react'
 import type { UseMutationResult } from '@tanstack/react-query'
 import { useMe } from './useMe.js'
 import { useLogin } from './useLogin.js'
 import { useLogout } from './useLogout.js'
 import { useAuthClient } from './useAuthClient.js'
+import { AuthProtectedContext } from './context.js'
 import type { LoginCredentials, TokenResponse, LogoutResponse } from '../core/types.js'
 
 // Callable wrapper nad UseMutationResult — funkcja, która:
 //   - wołana jak funkcja, robi mutateAsync (zwraca Promise),
 //   - ma wszystkie pola mutation (isPending, error, reset, ...).
-// Dzięki temu konsument pisze `await login(creds)` i jednocześnie
-// ma dostęp do `login.isPending`, `login.error` w UI.
 type CallableMutation<TData, TError, TVariables> = UseMutationResult<TData, TError, TVariables> &
   ((variables: TVariables) => Promise<TData>)
 
 function makeCallable<TData, TError, TVariables>(
   mutation: UseMutationResult<TData, TError, TVariables>,
 ): CallableMutation<TData, TError, TVariables> {
-  // Object.assign na funkcji — funkcja staje się "obiektem" niosącym pola mutation.
-  // mutateAsync jest stabilny per-mutation-instance (TanStack cache'uje), więc
-  // referencja `login` zmienia się dopiero gdy zmienia się stan mutation —
-  // dokładnie tak jak zwykły hook.
   const fn = ((variables: TVariables) => mutation.mutateAsync(variables)) as CallableMutation<
     TData,
     TError,
@@ -34,13 +29,14 @@ export type UseAuthLogout = CallableMutation<LogoutResponse, Error, void>
 
 export function useAuth() {
   const client = useAuthClient()
-  const meQuery = useMe()
+  // Kontekst protekcji — true tylko wewnątrz <AuthBoundary>.
+  // Poza boundary useMe nie strzela /me i nie polluje (enabled: false).
+  const isProtected = useContext(AuthProtectedContext)
+
+  const meQuery = useMe({ enabled: isProtected })
   const loginMutation = useLogin()
   const logoutMutation = useLogout()
 
-  // useMemo, żeby referencja callable nie zmieniała się przy każdym renderze.
-  // Zależności pokrywają każdą obserwowalną zmianę stanu mutation —
-  // gdy któryś z tych pól się zmieni, robimy nowy callable.
   const login = useMemo(
     () => makeCallable(loginMutation),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -52,12 +48,14 @@ export function useAuth() {
     [logoutMutation.isPending, logoutMutation.error, logoutMutation.data, logoutMutation.status],
   )
 
+  // Poza boundary user jest zawsze null (nie wołamy /me, więc nie wiemy nic).
+  // Wewnątrz boundary user przychodzi z meQuery.
   return {
     client,
-    user: meQuery.data ?? null,
-    isLoading: meQuery.isLoading,
-    isAuthenticated: !meQuery.isError && meQuery.data != null,
-    error: meQuery.error,
+    user: isProtected ? (meQuery.data ?? null) : null,
+    isLoading: isProtected ? meQuery.isLoading : false,
+    isAuthenticated: isProtected ? !meQuery.isError && meQuery.data != null : false,
+    error: isProtected ? meQuery.error : null,
     refetch: meQuery.refetch,
     login,
     logout,

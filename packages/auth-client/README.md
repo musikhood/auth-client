@@ -6,6 +6,7 @@ Wspólny klient auth dla frontendów React i Vue 3. Owija HTTP, automatyczny ref
 - Interceptor 401 → automatyczny `/api/token/refresh` → retry oryginalnego requestu, z single-flight lockiem (N równoległych 401 = 1 refresh).
 - Background polling `/me` co 30 s + refetch po focusie okna — UI sam wie gdy admin wyłączy konto albo zmieni role.
 - Subpath exports: `@musikhood-dev/auth-client` (core), `/react`, `/vue`.
+- **Jeden hook**: `useAuth()` daje user, login, logout. Tryb chroniony aktywujesz przez `<AuthBoundary>` w drzewie — wewnątrz `useAuth()` woła `/me` i polluje, poza nim nic nie robi (user = null).
 
 ## Instalacja
 
@@ -21,31 +22,36 @@ npm i @tanstack/vue-query
 
 ```tsx
 import { createAuthClient } from '@musikhood-dev/auth-client'
-import { AuthProvider, useAuth, AuthGate } from '@musikhood-dev/auth-client/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AuthProvider, AuthBoundary, useAuth } from '@musikhood-dev/auth-client/react'
 
 const authClient = createAuthClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL,
   onUnauthorized: () => {
-    window.location.href = '/login'
+    if (window.location.pathname !== '/login') window.location.href = '/login'
   },
 })
 
-const queryClient = new QueryClient()
-
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider client={authClient}>
-        <AuthGate fallback={<LoginPage />}>
-          <ProtectedApp />
-        </AuthGate>
-      </AuthProvider>
-    </QueryClientProvider>
+    <AuthProvider client={authClient}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/*"
+          element={
+            <AuthBoundary>
+              <ProtectedApp />
+            </AuthBoundary>
+          }
+        />
+      </Routes>
+    </AuthProvider>
   )
 }
 
 function LoginPage() {
+  // Poza <AuthBoundary> — useAuth() nie woła /me, user jest null.
+  // Login callable nadal dostępny.
   const { login } = useAuth()
   return (
     <button
@@ -54,6 +60,17 @@ function LoginPage() {
     >
       {login.isPending ? 'Loguję…' : 'Zaloguj'}
     </button>
+  )
+}
+
+function ProtectedApp() {
+  // Wewnątrz <AuthBoundary> — useAuth() woła /me, polluje co 30s.
+  const { user, logout } = useAuth()
+  return (
+    <>
+      <p>Witaj, {user?.displayName}</p>
+      <button onClick={logout}>Wyloguj</button>
+    </>
   )
 }
 ```
@@ -147,16 +164,17 @@ Single-flight lock gwarantuje że N równoległych 401-ek triggeruje dokładnie 
 
 ### React adapter (`@musikhood-dev/auth-client/react`)
 
-- `<AuthProvider client={authClient}>`
-- `useAuth()` — agregat: `{ user, isAuthenticated, isLoading, login, logout, refetch, error, client }`. `login` i `logout` są **callable funkcjami** (`await login({username, password})`, `<button onClick={logout}>`) i mają stan mutation (`login.isPending`, `login.error`, `login.reset`).
-- `useMe()`, `useLogin()`, `useLogout()`, `useAuthClient()` — niskopoziomowe (`useLogin`/`useLogout` zwracają standardowy `UseMutationResult` jeśli wolisz `mutate`/`mutateAsync`).
-- `<AuthGate fallback loading>` — renderuje children gdy zalogowany.
+- `<AuthProvider client={authClient}>` — wpina klienta i jego eventy w cache TanStack Query.
+- `<AuthBoundary>` — aktywuje tryb chroniony. Wewnątrz `useAuth()` woła `/me`, polluje, refetchuje. Poza nim `useAuth()` nie woła `/me`.
+- `<AuthGate fallback loading>` — renderuje children gdy zalogowany (pod spodem patrzy na `useAuth`).
+- `useAuth()` — jedyny hook. Zwraca `{ user, isAuthenticated, isLoading, error, refetch, login, logout, client }`. `login` i `logout` są **callable funkcjami** (`await login({username, password})`, `<button onClick={logout}>`) i mają stan mutation (`login.isPending`, `login.error`, `login.reset`).
 
 ### Vue 3 adapter (`@musikhood-dev/auth-client/vue`)
 
 - `createAuth(authClient)` — plugin (`app.use(...)`).
-- `useAuth()`, `useMe()`, `useLogin()`, `useLogout()`, `useAuthClient()` — composables.
+- `<AuthBoundary>` — aktywuje tryb chroniony (jak w React).
 - `<AuthGate>` — komponent z slotami `default` / `fallback` / `loading`.
+- `useAuth()` — jedyny composable, kształt analogiczny do React (dane jako `Ref`/`ComputedRef`).
 
 ## Wsparcie
 
