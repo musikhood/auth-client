@@ -25,9 +25,9 @@ export type TokenResponse = {
   token_expiration: number
 }
 
-export type LogoutResponse = {
-  message: string
-}
+// Backend zwraca różne kształty (`{message: "Logged out."}` lub puste body / pustą tablicę).
+// Klient i tak nie używa treści — czyści lokalny stan i emituje event niezależnie od body.
+export type LogoutResponse = unknown
 
 export type AuthClientConfig = {
   baseUrl: string
