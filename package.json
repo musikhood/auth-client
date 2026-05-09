@@ -1,7 +1,7 @@
 {
   "name": "auth-client-monorepo",
-  "private": false,
-  "version": "0.0.1",
+  "private": true,
+  "version": "0.0.0",
   "description": "Monorepo for @musikhood-dev/auth-client",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
@@ -18,7 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "leak-check": "node scripts/leak-check.mjs",
-    "prepare": "husky"
+    "prepare": "husky",
+    "prepublishOnly": "echo 'Root monorepo nie jest publikowany. Wejdź w packages/auth-client i tam uruchom publish.' && exit 1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
