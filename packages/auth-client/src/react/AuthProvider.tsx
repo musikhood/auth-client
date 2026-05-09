@@ -1,5 +1,10 @@
-import { useEffect, type ReactNode } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useContext, useEffect, useState, type ReactNode } from 'react'
+import {
+  QueryClient,
+  QueryClientContext,
+  QueryClientProvider,
+  useQueryClient,
+} from '@tanstack/react-query'
 import type { AuthClient } from '../core/client.js'
 import { AuthClientContext, ME_QUERY_KEY } from './context.js'
 
@@ -8,12 +13,12 @@ export type AuthProviderProps = {
   children: ReactNode
 }
 
-export function AuthProvider({ client, children }: AuthProviderProps) {
+// Wewnętrzny komponent — wpina eventy klienta w cache TanStack Query.
+// Wyniesione z AuthProvider, żeby useQueryClient() leciał z gwarantowanego contextu
+// (albo zewnętrznego od konsumenta, albo naszego fallbackowego).
+function AuthEventsBridge({ client }: { client: AuthClient }) {
   const queryClient = useQueryClient()
-
   useEffect(() => {
-    // Po unauthorized lub logout zerujemy cache /me — kolejny render który
-    // czyta useMe() dostanie świeży, pusty stan zamiast starych danych usera.
     const offUnauthorized = client.on('unauthorized', () => {
       queryClient.setQueryData(ME_QUERY_KEY, null)
     })
@@ -29,6 +34,25 @@ export function AuthProvider({ client, children }: AuthProviderProps) {
       offLogin()
     }
   }, [client, queryClient])
+  return null
+}
 
-  return <AuthClientContext.Provider value={client}>{children}</AuthClientContext.Provider>
+export function AuthProvider({ client, children }: AuthProviderProps) {
+  // Sprawdzamy czy konsument ma własny QueryClientProvider w drzewie.
+  // Jeśli tak — używamy jego (dzieli cache z resztą aplikacji).
+  // Jeśli nie — robimy fallback, żeby paczka działała "out of the box".
+  const externalQueryClient = useContext(QueryClientContext)
+  const [fallbackQueryClient] = useState(() => (externalQueryClient ? null : new QueryClient()))
+
+  const inner = (
+    <AuthClientContext.Provider value={client}>
+      <AuthEventsBridge client={client} />
+      {children}
+    </AuthClientContext.Provider>
+  )
+
+  if (fallbackQueryClient) {
+    return <QueryClientProvider client={fallbackQueryClient}>{inner}</QueryClientProvider>
+  }
+  return inner
 }

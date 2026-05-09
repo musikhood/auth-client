@@ -48,7 +48,12 @@ export function App() {
 function LoginPage() {
   const { login } = useAuth()
   return (
-    <button onClick={() => login.mutate({ username: 'jan', password: 'tajne' })}>Zaloguj</button>
+    <button
+      onClick={() => login({ username: 'jan', password: 'tajne' })}
+      disabled={login.isPending}
+    >
+      {login.isPending ? 'Loguję…' : 'Zaloguj'}
+    </button>
   )
 }
 ```
@@ -82,10 +87,28 @@ const { login } = useAuth()
   <AuthGate>
     <template #default>Witaj</template>
     <template #fallback>
-      <button @click="login.mutate({ username: 'jan', password: 'tajne' })">Zaloguj</button>
+      <button
+        @click="login({ username: 'jan', password: 'tajne' })"
+        :disabled="login.isPending.value"
+      >
+        Zaloguj
+      </button>
     </template>
   </AuthGate>
 </template>
+```
+
+## Brak konfiguracji TanStack Query (React)
+
+W React `<AuthProvider>` sam stworzy `QueryClient`, jeśli konsument nie zainstalował własnego `<QueryClientProvider>`. Dzięki temu paczka działa "out of the box".
+
+Jeśli aplikacja chce dzielić ten sam `QueryClient` ze swoimi własnymi query, wystarczy nałożyć `<QueryClientProvider>` na zewnątrz `<AuthProvider>` — paczka go wykryje i użyje.
+
+We Vue trzeba zainstalować `VueQueryPlugin` ręcznie przed `createAuth`:
+
+```ts
+app.use(VueQueryPlugin)
+app.use(createAuth(authClient))
 ```
 
 ## Konfiguracja
@@ -125,8 +148,8 @@ Single-flight lock gwarantuje że N równoległych 401-ek triggeruje dokładnie 
 ### React adapter (`@musikhood-dev/auth-client/react`)
 
 - `<AuthProvider client={authClient}>`
-- `useAuth()` — agregat: `{ user, isAuthenticated, isLoading, login, logout, refetch, error, client }`.
-- `useMe()`, `useLogin()`, `useLogout()`, `useAuthClient()` — niskopoziomowe.
+- `useAuth()` — agregat: `{ user, isAuthenticated, isLoading, login, logout, refetch, error, client }`. `login` i `logout` są **callable funkcjami** (`await login({username, password})`, `<button onClick={logout}>`) i mają stan mutation (`login.isPending`, `login.error`, `login.reset`).
+- `useMe()`, `useLogin()`, `useLogout()`, `useAuthClient()` — niskopoziomowe (`useLogin`/`useLogout` zwracają standardowy `UseMutationResult` jeśli wolisz `mutate`/`mutateAsync`).
 - `<AuthGate fallback loading>` — renderuje children gdy zalogowany.
 
 ### Vue 3 adapter (`@musikhood-dev/auth-client/vue`)
