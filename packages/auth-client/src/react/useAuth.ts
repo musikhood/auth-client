@@ -29,11 +29,22 @@ export type UseAuthLogout = CallableMutation<LogoutResponse, Error, void>
 
 export function useAuth() {
   const client = useAuthClient()
-  // Kontekst protekcji — true tylko wewnątrz <AuthBoundary>.
-  // Poza boundary useMe nie strzela /me i nie polluje (enabled: false).
-  const isProtected = useContext(AuthProtectedContext)
+  // Kontekst boundary — null poza boundary, 'protected' / 'guest' wewnątrz.
+  const mode = useContext(AuthProtectedContext)
 
-  const meQuery = useMe({ enabled: isProtected })
+  // /me strzelamy w obu trybach boundary (protected + guest).
+  // Polling tylko w 'protected'.
+  const enabled = mode !== null
+  // Domyślny interval z configu klienta (jeśli ustawiono meRefetchInterval).
+  const configInterval = client.config.meRefetchInterval
+  const refetchInterval =
+    mode !== 'protected'
+      ? (false as const)
+      : configInterval === false
+        ? (false as const)
+        : (configInterval ?? 30_000)
+
+  const meQuery = useMe({ enabled, refetchInterval })
   const loginMutation = useLogin()
   const logoutMutation = useLogout()
 
@@ -49,13 +60,13 @@ export function useAuth() {
   )
 
   // Poza boundary user jest zawsze null (nie wołamy /me, więc nie wiemy nic).
-  // Wewnątrz boundary user przychodzi z meQuery.
+  // Wewnątrz boundary (protected lub guest) user przychodzi z meQuery.
   return {
     client,
-    user: isProtected ? (meQuery.data ?? null) : null,
-    isLoading: isProtected ? meQuery.isLoading : false,
-    isAuthenticated: isProtected ? !meQuery.isError && meQuery.data != null : false,
-    error: isProtected ? meQuery.error : null,
+    user: enabled ? (meQuery.data ?? null) : null,
+    isLoading: enabled ? meQuery.isLoading : false,
+    isAuthenticated: enabled ? !meQuery.isError && meQuery.data != null : false,
+    error: enabled ? meQuery.error : null,
     refetch: meQuery.refetch,
     login,
     logout,

@@ -1,9 +1,11 @@
 import type { AxiosInstance } from 'axios'
 import axios, { isAxiosError } from 'axios'
 import { createAuthEmitter, type AuthEmitter } from './events.js'
+import { attachBroadcastSync } from './broadcast.js'
 import { createHttp, ENDPOINTS, type RequestConfig } from './http.js'
 import {
   AuthError,
+  ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
   SessionExpiredError,
@@ -35,6 +37,12 @@ export type AuthClient = {
   me(): Promise<AuthUser>
   refresh(): Promise<TokenResponse>
 
+  // Sprawdza czy zalogowany user ma wymagane role. Jeśli nie — woła logout()
+  // i rzuca ForbiddenRoleError. Typowy wzorzec: `await login(); await assertRoles([...]);`
+  // Mode "all" (default): user musi mieć WSZYSTKIE wymienione role.
+  // Mode "any": user musi mieć przynajmniej JEDNĄ.
+  assertRoles(roles: string[], mode?: 'all' | 'any'): Promise<AuthUser>
+
   // Sync helper — true gdy ostatnie wywołanie me() się powiodło i nie było potem
   // logoutu / unauthorized. Nie odpala żadnego HTTP, czyta tylko cache w pamięci.
   isAuthenticated(): boolean
@@ -53,11 +61,32 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   }
 
   const emitter = createAuthEmitter()
+
+  // Jeśli konsument podał `unauthorizedRedirect`, paczka sama robi redirect
+  // z wbudowanym pathname guardem (nie przeładuje gdy już jesteś na docelowej ścieżce).
+  // `onUnauthorized` callback ma pierwszeństwo dla advanced cases.
+  const resolvedOnUnauthorized: (() => void) | undefined =
+    config.onUnauthorized ??
+    (config.unauthorizedRedirect
+      ? () => {
+          if (typeof window === 'undefined') return
+          if (window.location.pathname === config.unauthorizedRedirect) return
+          window.location.href = config.unauthorizedRedirect!
+        }
+      : undefined)
+
   const http = createHttp({
     baseUrl: config.baseUrl,
     emitter,
-    onUnauthorized: config.onUnauthorized,
+    onUnauthorized: resolvedOnUnauthorized,
   })
+
+  // Cross-tab sync — opt-in. Listener tworzy nowy BroadcastChannel/storage listener.
+  // Konsument może odpiąć ręcznie przez `client._detachBroadcast?.()` (zarezerwowane
+  // dla testów). W praktyce żyje przez całą sesję.
+  if (config.broadcastSession && typeof window !== 'undefined') {
+    attachBroadcastSync(emitter)
+  }
 
   let cachedUser: AuthUser | null = null
 
@@ -162,9 +191,30 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
       } catch (err) {
         emitter.emit('unauthorized', undefined)
         emitter.emit('user-changed', null)
-        config.onUnauthorized?.()
+        resolvedOnUnauthorized?.()
         throw new SessionExpiredError('Session expired', err)
       }
+    },
+
+    async assertRoles(roles: string[], mode: 'all' | 'any' = 'all') {
+      // Świeże /me — nie ufamy cache, bo assertRoles to security gate.
+      const user = await this.me()
+      const userRoles = user.roles ?? []
+      const ok =
+        mode === 'all'
+          ? roles.every((r) => userRoles.includes(r))
+          : roles.some((r) => userRoles.includes(r))
+      if (ok) return user
+
+      // Brak ról — czyścimy sesję (cookies + cache), żeby konsument nie miał
+      // "pół-zalogowanego" stanu po którym jeszcze pozwolimy klikać.
+      try {
+        await this.logout()
+      } catch {
+        // Nawet jeśli logout się wysypie (np. sieć), event 'logout' poszedł,
+        // cachedUser wyzerowany — wystarczy do bezpieczeństwa.
+      }
+      throw new ForbiddenRoleError(roles, userRoles, mode)
     },
 
     isAuthenticated() {

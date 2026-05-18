@@ -1,12 +1,13 @@
 # @musikhood-dev/auth-client
 
-Wspólny klient auth dla frontendów React i Vue 3. Automatycznie wysyła JWT w cookies, sam odświeża token gdy wygaśnie, i daje jeden hook do całej obsługi auth.
+Wspólny klient auth dla frontendów React i Vue 3.
 
-- **Jeden hook**: `useAuth()` zwraca `user`, `login`, `logout` i stan.
-- **Cookies-only**: BEARER + refresh_token (HttpOnly, SameSite=None). Nic w localStorage.
-- **Auto-refresh**: 401 z serwera → `/api/token/refresh` → ponowienie oryginalnego requestu. Wszystko niewidoczne dla użytkownika.
-- **Single-flight lock**: N równoległych 401-ek triggeruje dokładnie jeden refresh.
-- **Wszystkie requesty do twojego API** przez `authClient.http` mają auto-refresh za darmo.
+- **Jeden komponent**: `<AuthBoundary>` dla tras chronionych i publicznych.
+- **Jeden hook**: `useAuth()` daje `user`, `login`, `logout`.
+- **Cookies-only**: BEARER + refresh_token (HttpOnly). Nic w localStorage.
+- **Auto-refresh**: 401 → `/api/token/refresh` → retry oryginalnego requestu. Single-flight lock.
+- **Cross-tab sync** (opt-in): logout / login w jednym tabie propaguje się do reszty.
+- **Role-based access**: `requireRoles` / `requireAnyRole` w `<AuthBoundary>` + `client.assertRoles()` przy login.
 
 ## Instalacja
 
@@ -18,82 +19,124 @@ npm i @tanstack/react-query
 npm i @tanstack/vue-query
 ```
 
-## Jak to działa w 30 sekund
+## Minimalna konfiguracja
 
-1. Tworzysz `authClient` raz, na starcie aplikacji.
-2. Owijasz appkę w `<AuthProvider client={authClient}>`.
-3. **Chronione** części aplikacji owijasz dodatkowo w `<AuthBoundary>`. Tylko wewnątrz tej granicy `useAuth()` woła `/api/v1/user/me`, polluje co 30s i odświeża po focusie okna. Dwa opcjonalne propy:
-   - `fallback` — renderowany podczas pierwszego `/me` lub gdy user nie ma sesji (typowo `<Spinner/>` albo skeleton).
-   - `onUnauthorized` — wołane gdy `/me` się nie udało (typowo `navigate('/login')`).
-4. W komponentach piszesz `const { user, login, logout } = useAuth()`. Tyle.
+```ts
+import { createAuthClient } from '@musikhood-dev/auth-client'
+
+export const authClient = createAuthClient({
+  baseUrl: import.meta.env.VITE_API_BASE_URL, // np. http://localhost
+  unauthorizedRedirect: '/login', // paczka sama robi redirect + pathname guard
+  broadcastSession: true, // (opcjonalne) cross-tab sync
+})
+```
+
+## Architektura w 30 sekund
+
+Aplikację dzielisz na **trzy strefy**:
 
 ```
-<AuthProvider>             ← raz na całą aplikację
-  /login                   ← useAuth() → { user: null, login(...) }
-  /...                     ← inne publiczne strony
-  <AuthBoundary>           ← tu zaczyna się tryb chroniony
-    /dashboard             ← useAuth() → { user, logout(...) }
-    /products
-    ...
-  </AuthBoundary>
+<AuthProvider>                          ← raz, w roocie aplikacji
+  <Route path="/login">
+    <AuthBoundary mode="guest">         ← publiczna: zalogowany → redirect na /
+      <LoginPage />
+    </AuthBoundary>
+  </Route>
+
+  <Route path="/*">
+    <AuthBoundary>                      ← chroniona: niezalogowany → redirect na /login
+      <App />
+    </AuthBoundary>
+  </Route>
+
+  <Route path="/admin">
+    <AuthBoundary requireRoles={['ROLE_ADMIN']}>  ← chroniona + role
+      <AdminPanel />
+    </AuthBoundary>
+  </Route>
 </AuthProvider>
 ```
 
-## Szybki start — React
+W każdym chronionym komponencie:
+
+```ts
+const { user, login, logout } = useAuth()
+```
+
+## React — pełny przykład
 
 ```tsx
+// lib/auth.ts
 import { createAuthClient } from '@musikhood-dev/auth-client'
-import { AuthProvider, AuthBoundary, useAuth } from '@musikhood-dev/auth-client/react'
-import { Routes, Route } from 'react-router'
 
-const authClient = createAuthClient({
+export const authClient = createAuthClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL,
-  onUnauthorized: () => {
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login'
-    }
-  },
+  unauthorizedRedirect: '/login',
+  broadcastSession: true,
 })
+
+// App.tsx
+import { AuthProvider, AuthBoundary, useAuth } from '@musikhood-dev/auth-client/react'
+import { Routes, Route, useNavigate } from 'react-router'
+import { authClient } from './lib/auth'
 
 export function App() {
   return (
     <AuthProvider client={authClient}>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="/*"
-          element={
-            <AuthBoundary
-              fallback={<Spinner />}
-              onUnauthorized={() => navigate('/login', { replace: true })}
-            >
-              <ProtectedApp />
-            </AuthBoundary>
-          }
-        />
+        <Route path="/login" element={<LoginRoute />} />
+        <Route path="/admin/*" element={<AdminRoute />} />
+        <Route path="/*" element={<AppRoute />} />
       </Routes>
     </AuthProvider>
   )
 }
 
+function LoginRoute() {
+  const navigate = useNavigate()
+  return (
+    <AuthBoundary
+      mode="guest"
+      fallback={<Spinner />}
+      onAuthenticated={() => navigate('/', { replace: true })}
+    >
+      <LoginPage />
+    </AuthBoundary>
+  )
+}
+
+function AppRoute() {
+  return (
+    <AuthBoundary fallback={<Spinner />}>
+      <Dashboard />
+    </AuthBoundary>
+  )
+}
+
+function AdminRoute() {
+  const navigate = useNavigate()
+  return (
+    <AuthBoundary
+      requireRoles={['ROLE_ADMIN']}
+      fallback={<Spinner />}
+      onForbidden={() => navigate('/', { replace: true })}
+    >
+      <AdminPanel />
+    </AuthBoundary>
+  )
+}
+
 function LoginPage() {
-  // Poza <AuthBoundary>: useAuth() NIE woła /me, user = null.
-  // login() callable z stanem mutation jest dostępny.
   const { login } = useAuth()
   return (
     <form
       onSubmit={async (e) => {
         e.preventDefault()
         const form = new FormData(e.currentTarget)
-        try {
-          await login({
-            username: form.get('username') as string,
-            password: form.get('password') as string,
-          })
-          window.location.href = '/'
-        } catch {
-          // login.error też dostępny, można pokazać toast
-        }
+        await login({
+          username: form.get('username') as string,
+          password: form.get('password') as string,
+        })
       }}
     >
       <input name="username" />
@@ -101,15 +144,12 @@ function LoginPage() {
       <button type="submit" disabled={login.isPending}>
         {login.isPending ? 'Loguję…' : 'Zaloguj'}
       </button>
-      {login.error && <p>{login.error.message}</p>}
     </form>
   )
 }
 
-function ProtectedApp() {
-  // Wewnątrz <AuthBoundary>: useAuth() woła /me, polluje co 30s, refetchuje po focusie.
-  const { user, logout, isLoading } = useAuth()
-  if (isLoading) return <p>Ładowanie…</p>
+function Dashboard() {
+  const { user, logout } = useAuth()
   return (
     <>
       <p>Witaj, {user?.displayName ?? user?.email}</p>
@@ -119,7 +159,7 @@ function ProtectedApp() {
 }
 ```
 
-## Szybki start — Vue 3
+## Vue 3 — pełny przykład
 
 ```ts
 // main.ts
@@ -131,11 +171,8 @@ import App from './App.vue'
 
 const authClient = createAuthClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL,
-  onUnauthorized: () => {
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login'
-    }
-  },
+  unauthorizedRedirect: '/login',
+  broadcastSession: true,
 })
 
 const app = createApp(App)
@@ -145,139 +182,177 @@ app.mount('#app')
 ```
 
 ```vue
-<!-- App.vue -->
+<!-- LoginView.vue -->
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import { AuthBoundary, useAuth } from '@musikhood-dev/auth-client/vue'
 
-const { login } = useAuth() // poza AuthBoundary: user = null, login callable dostępny
+const router = useRouter()
+const { login } = useAuth()
 </script>
 
 <template>
-  <!-- strona publiczna -->
-  <RouterView v-if="$route.path === '/login'">
-    <button
-      @click="login({ username: 'jan', password: 'tajne' })"
-      :disabled="login.isPending.value"
-    >
-      Zaloguj
-    </button>
-  </RouterView>
-
-  <!-- chroniona część aplikacji -->
-  <AuthBoundary v-else>
-    <ProtectedApp />
+  <AuthBoundary mode="guest" :on-authenticated="() => router.replace('/')">
+    <template #fallback><Spinner /></template>
+    <template #default>
+      <form @submit.prevent="login({ username, password })">
+        <input v-model="username" />
+        <input v-model="password" type="password" />
+        <button :disabled="login.isPending.value">Zaloguj</button>
+      </form>
+    </template>
   </AuthBoundary>
 </template>
 ```
 
 ```vue
-<!-- ProtectedApp.vue — wewnątrz AuthBoundary -->
+<!-- AppView.vue -->
 <script setup lang="ts">
-import { useAuth } from '@musikhood-dev/auth-client/vue'
+import { AuthBoundary, useAuth } from '@musikhood-dev/auth-client/vue'
 const { user, logout } = useAuth()
 </script>
 
 <template>
-  <p v-if="user">Witaj, {{ user.displayName ?? user.email }}</p>
-  <button @click="logout()">Wyloguj</button>
+  <AuthBoundary>
+    <template #fallback><Spinner /></template>
+    <template #default>
+      <p>Witaj, {{ user?.displayName ?? user?.email }}</p>
+      <button @click="logout()">Wyloguj</button>
+    </template>
+  </AuthBoundary>
 </template>
 ```
 
-> **Uwaga Vue**: dane w `useAuth()` są reaktywne (`Ref`/`ComputedRef`). W `<script>` używaj `user.value`, w `<template>` Vue auto-unwrapuje. `login.isPending` to też `Ref<boolean>` (stąd `.value` w bindingu `:disabled`).
+> W Vue dane są reaktywne (`Ref`/`ComputedRef`). W `<script>` używaj `user.value`, w `<template>` Vue auto-unwrapuje. `login.isPending` to `Ref<boolean>` (stąd `.value` w `:disabled`).
+
+## `<AuthBoundary>` — pełny kontrakt
+
+| Prop              | Typ                        | Default                      | Opis                                                                                                 |
+| ----------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `mode`            | `"protected"` \| `"guest"` | `"protected"`                | `protected`: wymaga zalogowanego usera + polling /me. `guest`: wymaga NIE-zalogowanego (np. /login). |
+| `fallback`        | `ReactNode` / slot         | `null`                       | Renderowane podczas ładowania /me LUB gdy warunki dostępu niespełnione.                              |
+| `requireRoles`    | `string[]`                 | —                            | (`protected`) User musi mieć WSZYSTKIE wymienione role (AND).                                        |
+| `requireAnyRole`  | `string[]`                 | —                            | (`protected`) User musi mieć PRZYNAJMNIEJ JEDNĄ z ról (OR).                                          |
+| `onUnauthorized`  | `() => void`               | —                            | (`protected`) Brak sesji / refresh fail.                                                             |
+| `onForbidden`     | `() => void`               | fallback do `onUnauthorized` | (`protected`) Sesja jest, ale brak ról.                                                              |
+| `onAuthenticated` | `() => void`               | —                            | (`guest`) User JEST zalogowany — typowo redirect na `/`.                                             |
 
 ## `useAuth()` — pełny kształt
 
 ```ts
 const {
-  user, // AuthUser | null. Wewnątrz <AuthBoundary> przychodzi z /me; poza — null.
-  isAuthenticated, // boolean. True gdy user się załadował i jest sesja.
-  isLoading, // boolean. True podczas pierwszego /me.
-  error, // Error | null. Błąd z /me (np. SessionExpiredError).
-  refetch, // () => Promise. Ręczne odświeżenie usera.
+  user, // AuthUser | null. W boundary z /me; poza boundary — null.
+  isAuthenticated, // boolean
+  isLoading, // boolean — true podczas pierwszego /me
+  error, // Error | null
+  refetch, // () => Promise — ręczne odświeżenie /me
 
-  login, // callable: await login({ username, password })
-  //   login.isPending, login.error, login.reset, login.data
-  logout, // callable: logout() (idempotent)
-  //   logout.isPending, logout.error, logout.reset
+  login, // await login({ username, password })
+  //   + login.isPending, login.error, login.reset
+  logout, // logout() — idempotentny
+  //   + logout.isPending, logout.error
 
-  client, // niskopoziomowy AuthClient (zwykle niepotrzebny)
+  client, // niskopoziomowy AuthClient (rzadko potrzebny)
 } = useAuth()
 ```
 
-`login` i `logout` to **funkcje z dołączonym stanem mutation**. Można je wołać bezpośrednio (`await login(creds)`, `onClick={logout}`) i jednocześnie czytać `login.isPending`, `login.error` w UI.
+`login` i `logout` są **callable funkcjami z dołączonym stanem mutation** — wołasz jak funkcję (`await login(creds)`, `<button onClick={logout}>`) i jednocześnie czytasz `login.isPending`, `login.error`.
 
-## Requesty do twojego API z auto-refresh
-
-`authClient.http` to instancja axios z gotowym interceptorem 401 → refresh → retry. Używaj jej do wszystkich autoryzowanych endpointów twojego mikroserwisu:
-
-```ts
-import { authClient } from './lib/auth'
-
-// w komponencie / hooku / loaderze:
-const products = await authClient.http.get('/api/products')
-// skrótowo:
-const products = await authClient.get('/api/products')
-```
-
-Cookies BEARER + refresh_token przeglądarka dokleja automatycznie (`withCredentials: true`). Gdy backend zwróci 401, paczka:
-
-1. zatrzymuje response,
-2. woła `/api/token/refresh`,
-3. ponawia oryginalny request.
-
-Single-flight lock gwarantuje że N równoległych 401-ek triggeruje dokładnie jeden `/api/token/refresh` (nie N).
-
-## Konfiguracja `createAuthClient`
+## `createAuthClient` — config
 
 ```ts
 createAuthClient({
-  baseUrl: string,                  // wymagane — np. import.meta.env.VITE_API_BASE_URL
-  onUnauthorized?: () => void,      // wołane gdy refresh ostatecznie się nie udał.
-                                    // Typowo: redirect na /login (z sprawdzeniem czy już tam nie jesteśmy).
-  fetch?: typeof fetch,             // override dla testów (klient i tak używa axios).
+  baseUrl: string,                       // wymagane
+
+  unauthorizedRedirect?: string,         // np. '/login' — paczka sama redirectuje
+                                         // z wbudowanym pathname guardem
+  onUnauthorized?: () => void,           // alternatywa dla advanced cases (ma pierwszeństwo)
+
+  meRefetchInterval?: number | false,    // ms, default 30_000. false = bez pollingu
+
+  broadcastSession?: boolean,            // default false. Cross-tab sync logout/login.
 })
 ```
 
-## Kontrakt z backendem
+## Cross-tab sync (`broadcastSession`)
 
-Paczka zakłada że backend wystawia te endpointy:
+Gdy włączone, paczka używa BroadcastChannel (fallback: storage event) żeby synchronizować sesję między tabami tego samego origin:
 
-| Metoda + URL              | Co robi                                                                                    |
-| ------------------------- | ------------------------------------------------------------------------------------------ |
-| `POST /api/login`         | Body `{ username, password }`. Sukces 200, backend ustawia cookies BEARER + refresh_token. |
-| `POST /api/logout`        | Idempotent. Backend kasuje cookies (`Max-Age=0`).                                          |
-| `POST /api/token/refresh` | Refresh_token z cookie. Sukces 200 z nowymi cookies. 401 = sesja martwa.                   |
-| `GET /api/v1/user/me`     | BEARER z cookie. Zwraca `AuthUser`.                                                        |
+- Logout w tabie A → tab B dostaje lokalny event `unauthorized` → AuthBoundary woła `onUnauthorized` → redirect.
+- Login w tabie A → tab B unieważnia query /me → svieży user się ładuje.
+- Refresh fail (`unauthorized`) w tabie A → tab B również się wylogowuje.
 
-Cookies muszą być `HttpOnly` (paczka nie czyta tokenów z JS) i `SameSite=None` z `Secure` (lub same-origin).
+Działa tylko na tym samym origin (cross-origin BroadcastChannel jest zablokowane).
 
-## Reagowanie na zdarzenia (zaawansowane)
+## Role-based access — dwa wzorce
 
-Jeśli potrzebujesz reagować na zmiany sesji **poza** komponentem (np. czyścić localStorage, slack-notyfikacja przy logoucie), użyj eventów na `authClient`:
+### 1. Deklaratywnie (`<AuthBoundary requireRoles>`)
+
+Cała sekcja UI wymaga roli:
+
+```tsx
+<AuthBoundary requireRoles={['ROLE_ADMIN']} onForbidden={() => navigate('/')}>
+  <AdminPanel />
+</AuthBoundary>
+```
+
+### 2. Imperatywnie (`client.assertRoles`)
+
+Po loginie chcesz natychmiast zweryfikować rolę. `assertRoles` woła /me, sprawdza role, jeśli nie spełniają — **woła logout()** i rzuca `ForbiddenRoleError`:
 
 ```ts
-authClient.on('login', (tokens) => {
-  /* ... */
-})
-authClient.on('logout', () => {
-  /* ... */
-})
-authClient.on('unauthorized', () => {
-  /* refresh fail */
-})
-authClient.on('user-changed', (user) => {
-  /* user.id się zmienił */
-})
+import { ForbiddenRoleError } from '@musikhood-dev/auth-client'
+
+try {
+  await client.login({ username, password })
+  await client.assertRoles(['ROLE_ADMIN'])
+  navigate('/admin')
+} catch (err) {
+  if (err instanceof ForbiddenRoleError) {
+    toast.error('Wymagane uprawnienia administratora')
+  }
+}
 ```
 
-`on()` zwraca funkcję unsubscribe.
+Drugi argument to tryb: `'all'` (default, AND) lub `'any'` (OR).
+
+## Requesty do twojego API z auto-refresh
+
+`authClient.http` to instancja axios z gotowym interceptorem 401 → refresh → retry:
+
+```ts
+const products = await authClient.http.get('/api/products')
+// albo skrótowo:
+const products = await authClient.get('/api/products')
+```
+
+Cookies leci automatycznie (`withCredentials: true`). Single-flight lock: N równoległych 401-ek triggeruje dokładnie jeden refresh.
+
+## Niskopoziomowe API
+
+Większość konsumentów nigdy tego nie tknie. Dostępne na `authClient`:
+
+```ts
+authClient.login(creds)        // POST /api/login
+authClient.logout()            // POST /api/logout, idempotent
+authClient.me()                // GET /api/v1/user/me
+authClient.refresh()           // manualny refresh
+authClient.assertRoles([...])  // /me + auto-logout jeśli brak ról
+authClient.isAuthenticated()   // sync getter z cache
+authClient.getCachedUser()     // sync getter z cache
+
+authClient.on('login',        (tokens) => {})
+authClient.on('logout',       () => {})
+authClient.on('unauthorized', () => {})
+authClient.on('user-changed', (user) => {})
+```
 
 ## Wsparcie
 
 - React 18.2+ / 19.x
 - Vue 3.4+
-- TanStack Query 5.x (React: auto-fallback gdy konsument nie ma `<QueryClientProvider>`; Vue: zainstaluj `VueQueryPlugin` przed `createAuth`)
-- Node 18+ do buildowania konsumentów
+- TanStack Query 5.x
+- Node 18+ (do buildowania konsumentów)
 
 ## Licencja
 

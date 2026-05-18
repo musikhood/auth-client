@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createAuthClient } from './client.js'
-import { InvalidCredentialsError, LoginForbiddenError, SessionExpiredError } from './errors.js'
+import {
+  ForbiddenRoleError,
+  InvalidCredentialsError,
+  LoginForbiddenError,
+  SessionExpiredError,
+} from './errors.js'
 import { BASE_URL, state } from '../test/server.js'
 
 function newClient(opts?: { onUnauthorized?: () => void }) {
@@ -180,6 +185,112 @@ describe('refresh lock', () => {
     ])
     expect(results).toHaveLength(5)
     expect(state.refreshCalls).toBe(1)
+  })
+})
+
+describe('assertRoles', () => {
+  it('zwraca usera gdy ma WSZYSTKIE wymagane role (mode "all")', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER', 'ROLE_ADMIN'],
+        disabled: false,
+      },
+    }
+    const client = newClient()
+    const user = await client.assertRoles(['ROLE_USER', 'ROLE_ADMIN'])
+    expect(user.id).toBe('u-1')
+    expect(state.logoutCalls).toBe(0)
+  })
+
+  it('rzuca ForbiddenRoleError + woła logout gdy brak ról (mode "all")', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const client = newClient()
+    await expect(client.assertRoles(['ROLE_ADMIN'])).rejects.toBeInstanceOf(ForbiddenRoleError)
+    expect(state.logoutCalls).toBe(1)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('mode "any" — wystarczy jedna z ról', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_EDIT'],
+        disabled: false,
+      },
+    }
+    const client = newClient()
+    const user = await client.assertRoles(['ROLE_ADMIN', 'ROLE_EDIT'], 'any')
+    expect(user.id).toBe('u-1')
+  })
+
+  it('mode "any" — fail gdy żadnej z ról nie ma', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const client = newClient()
+    await expect(client.assertRoles(['ROLE_ADMIN', 'ROLE_EDIT'], 'any')).rejects.toBeInstanceOf(
+      ForbiddenRoleError,
+    )
+  })
+})
+
+describe('unauthorizedRedirect (config)', () => {
+  it('builduje wbudowany onUnauthorized z pathname guardem', async () => {
+    const originalHref = window.location.href
+    const originalReplace = window.location.replace
+
+    // Symulujemy nawigację bez faktycznej zmiany URL
+    let navigatedTo: string | null = null
+    Object.defineProperty(window.location, 'href', {
+      set(v: string) {
+        navigatedTo = v
+      },
+      get() {
+        return originalHref
+      },
+      configurable: true,
+    })
+
+    state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
+    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      unauthorizedRedirect: '/login',
+    })
+    await expect(client.me()).rejects.toBeInstanceOf(SessionExpiredError)
+    expect(navigatedTo).toBe('/login')
+
+    // Cleanup
+    Object.defineProperty(window.location, 'href', {
+      value: originalHref,
+      writable: true,
+      configurable: true,
+    })
+    window.location.replace = originalReplace
   })
 })
 

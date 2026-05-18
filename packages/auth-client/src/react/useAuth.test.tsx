@@ -15,7 +15,7 @@ function protectedWrapper({ children }: { children: ReactNode }) {
   const client = createAuthClient({ baseUrl: BASE_URL })
   return (
     <AuthProvider client={client}>
-      <AuthProtectedContext.Provider value={true}>{children}</AuthProtectedContext.Provider>
+      <AuthProtectedContext.Provider value="protected">{children}</AuthProtectedContext.Provider>
     </AuthProvider>
   )
 }

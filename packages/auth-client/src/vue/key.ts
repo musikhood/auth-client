@@ -3,8 +3,9 @@ import type { AuthClient } from '../core/client.js'
 
 export const AUTH_CLIENT_KEY: InjectionKey<AuthClient> = Symbol('@musikhood-dev/auth-client')
 
-// Aktywne wewnątrz <AuthBoundary>. Gdy true — useAuth() woła /me, polluje, refetchuje.
-export const AUTH_PROTECTED_KEY: InjectionKey<boolean> = Symbol(
+// Tryb boundary — null poza boundary, 'protected' / 'guest' wewnątrz.
+export type AuthProtectedMode = 'protected' | 'guest'
+export const AUTH_PROTECTED_KEY: InjectionKey<AuthProtectedMode | null> = Symbol(
   '@musikhood-dev/auth-client/protected',
 )
 

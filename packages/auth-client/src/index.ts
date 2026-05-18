@@ -4,6 +4,7 @@ export type { AuthClient } from './core/client.js'
 export { ENDPOINTS } from './core/http.js'
 export {
   AuthError,
+  ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
   SessionExpiredError,

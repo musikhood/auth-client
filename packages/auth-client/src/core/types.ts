@@ -31,9 +31,28 @@ export type LogoutResponse = unknown
 
 export type AuthClientConfig = {
   baseUrl: string
+
+  // Callback wywoływany gdy refresh ostatecznie się nie udał.
+  // Pełna kontrola, ale konsument musi sam zabezpieczyć się przed pętlą redirect
+  // (np. sprawdzić `window.location.pathname !== '/login'`).
   onUnauthorized?: () => void
-  // Niewykorzystane wewnętrznie (klient używa axios), trzymane dla zgodności
-  // z wcześniejszą wersją kontraktu i ewentualnym przyszłym przełączeniem na fetch.
+
+  // Łatwiejsza alternatywa dla `onUnauthorized`: paczka sama robi redirect
+  // i wbudowany guard pathname (nie przeładuje gdy już jesteś na docelowej ścieżce).
+  // Jeśli ustawione, `onUnauthorized` jest ignorowane.
+  unauthorizedRedirect?: string
+
+  // Co ile ms `useMe()` w trybie chronionym odświeża /me.
+  // Default: 30_000. `false` wyłącza polling całkowicie.
+  meRefetchInterval?: number | false
+
+  // Cross-tab synchronizacja sesji: logout w jednym tab → wszystkie inne się wylogowują,
+  // login w jednym tab → wszystkie inne odświeżają /me.
+  // Używa BroadcastChannel (z fallbackiem do storage event dla starszych przeglądarek).
+  // Default: false (opt-in).
+  broadcastSession?: boolean
+
+  // Niewykorzystane wewnętrznie (klient używa axios), trzymane dla zgodności.
   fetch?: typeof fetch
 }
 

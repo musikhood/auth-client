@@ -34,3 +34,20 @@ export class SessionExpiredError extends AuthError {
     super(message, 401, cause)
   }
 }
+
+// Rzucany przez client.assertRoles() gdy user nie ma wymaganych ról.
+// assertRoles() automatycznie wywołuje logout() PRZED rzuceniem — sesja jest
+// czyszczona zanim konsument zobaczy ten błąd.
+export class ForbiddenRoleError extends AuthError {
+  override name = 'ForbiddenRoleError'
+  readonly requiredRoles: string[]
+  readonly userRoles: string[]
+  readonly mode: 'all' | 'any'
+  constructor(requiredRoles: string[], userRoles: string[], mode: 'all' | 'any') {
+    const reqText = mode === 'all' ? requiredRoles.join(' + ') : requiredRoles.join(' OR ')
+    super(`Missing required role(s): ${reqText}`, 403)
+    this.requiredRoles = requiredRoles
+    this.userRoles = userRoles
+    this.mode = mode
+  }
+}

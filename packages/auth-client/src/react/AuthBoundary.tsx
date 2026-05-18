@@ -1,57 +1,112 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { AuthProtectedContext } from './context.js'
 import { useAuth } from './useAuth.js'
 
+export type AuthBoundaryMode = 'protected' | 'guest'
+
 export type AuthBoundaryProps = {
   children: ReactNode
-  // Renderowane podczas pierwszego /me (gdy nie wiemy jeszcze czy user jest zalogowany).
-  // Typowo: <Spinner /> albo skeleton. Default: null.
+
+  // Tryb sesji:
+  //  - "protected" (default): wymaga zalogowanego usera. /me jest wołane, polling działa.
+  //  - "guest":               wymaga NIEzalogowanego usera (strony publiczne typu /login).
+  //                           /me jest wołane raz (bez pollingu) żeby wiedzieć czy user już ma sesję.
+  mode?: AuthBoundaryMode
+
+  // Renderowane gdy: ładujemy /me LUB warunki dostępu niespełnione (przed wywołaniem callbacku).
+  // Typowo <Spinner/> albo skeleton. Default: null.
   fallback?: ReactNode
-  // Wołane gdy /me się nie udało / sesja wygasła w trybie chronionym.
-  // Typowo: nawigacja na /login. Nadpisuje globalny onUnauthorized z createAuthClient.
+
+  // Kontrola dostępu po rolach — tylko w trybie "protected".
+  // Mutually exclusive — używaj jednego z dwóch:
+  //   requireRoles: user musi mieć WSZYSTKIE wymienione (AND).
+  //   requireAnyRole: user musi mieć PRZYNAJMNIEJ JEDNĄ (OR).
+  requireRoles?: string[]
+  requireAnyRole?: string[]
+
+  // Tryb "protected": user się nie zalogował / sesja wygasła.
   onUnauthorized?: () => void
+
+  // Tryb "protected": user zalogowany, ale brak wymaganych ról.
+  // Jeśli nie podano, paczka woła onUnauthorized jako fallback.
+  onForbidden?: () => void
+
+  // Tryb "guest": user JEST zalogowany (typowo redirect z /login na /).
+  onAuthenticated?: () => void
 }
 
-// Wszystko wewnątrz <AuthBoundary> ma "tryb chroniony" — useAuth() w tym poddrzewie
-// woła /me, polluje co 30s i odświeża po focusie. Poza boundary useAuth() zwraca
-// user: null bez żadnych requestów (stan publicznej strony, np. /login).
-export function AuthBoundary({ children, fallback = null, onUnauthorized }: AuthBoundaryProps) {
+// Wszystko wewnątrz <AuthBoundary> ma "tryb chroniony" (lub "guest") — useAuth() w tym
+// poddrzewie woła /me. Polling tylko w trybie "protected".
+export function AuthBoundary(props: AuthBoundaryProps) {
+  const mode = props.mode ?? 'protected'
   return (
-    <AuthProtectedContext.Provider value={true}>
-      <AuthBoundaryInner fallback={fallback} onUnauthorized={onUnauthorized}>
-        {children}
-      </AuthBoundaryInner>
+    <AuthProtectedContext.Provider value={mode}>
+      <AuthBoundaryInner {...props} />
     </AuthProtectedContext.Provider>
   )
 }
 
-// Wyodrębniony żeby useAuth() mógł działać w kontekście chronionym (musi być
-// renderowany WEWNĄTRZ AuthProtectedContext.Provider).
 function AuthBoundaryInner({
   children,
-  fallback,
+  mode = 'protected',
+  fallback = null,
+  requireRoles,
+  requireAnyRole,
   onUnauthorized,
-}: {
-  children: ReactNode
-  fallback: ReactNode
-  onUnauthorized?: () => void
-}) {
-  const { user, isLoading, isAuthenticated, error } = useAuth()
+  onForbidden,
+  onAuthenticated,
+}: AuthBoundaryProps) {
+  const { user, isLoading, error } = useAuth()
 
-  // Sesja w boundary się nie powiodła — wołamy callback (typowo redirect na /login).
-  // Trigger gdy useMe zwróci error lub gdy mamy pewność że user się nie pojawi.
-  useEffect(() => {
-    if (!onUnauthorized) return
-    if (!isLoading && !isAuthenticated && error) {
-      onUnauthorized()
+  // Sprawdzenie ról. Tylko sensowne gdy mamy usera i mode=protected.
+  const hasRequiredRoles = useMemo(() => {
+    if (mode !== 'protected') return true
+    if (!user) return false
+    const userRoles = user.roles ?? []
+    if (requireRoles && requireRoles.length > 0) {
+      return requireRoles.every((r) => userRoles.includes(r))
     }
-  }, [isLoading, isAuthenticated, error, onUnauthorized])
+    if (requireAnyRole && requireAnyRole.length > 0) {
+      return requireAnyRole.some((r) => userRoles.includes(r))
+    }
+    return true
+  }, [mode, user, requireRoles, requireAnyRole])
 
-  // Dopóki nie wiemy nic — pokazujemy fallback (spinner, skeleton, cokolwiek).
+  // Wywołania callbacków — w useEffect, żeby nie odpalać side effect podczas renderu.
+  useEffect(() => {
+    if (isLoading) return
+
+    if (mode === 'protected') {
+      // Brak sesji.
+      if (!user) {
+        if (error || !isLoading) {
+          onUnauthorized?.()
+        }
+        return
+      }
+      // Sesja jest, ale brak ról.
+      if (!hasRequiredRoles) {
+        ;(onForbidden ?? onUnauthorized)?.()
+      }
+      return
+    }
+
+    if (mode === 'guest') {
+      // Jest sesja — przekieruj.
+      if (user) {
+        onAuthenticated?.()
+      }
+    }
+  }, [isLoading, user, error, mode, hasRequiredRoles, onUnauthorized, onForbidden, onAuthenticated])
+
   if (isLoading) return <>{fallback}</>
-  // Wiemy że user się nie zalogował — jeśli konsument nie podał callbacku, dalej
-  // renderujemy fallback (zamiast pokazywać "nagi" chroniony layout bez usera).
-  if (!user) return <>{fallback}</>
 
+  if (mode === 'protected') {
+    if (!user || !hasRequiredRoles) return <>{fallback}</>
+    return <>{children}</>
+  }
+
+  // mode === 'guest'
+  if (user) return <>{fallback}</>
   return <>{children}</>
 }

@@ -1,35 +1,67 @@
-import { defineComponent, h, provide, watch, type PropType } from 'vue'
-import { AUTH_PROTECTED_KEY } from './key.js'
+import { computed, defineComponent, provide, watch, type PropType } from 'vue'
+import { AUTH_PROTECTED_KEY, type AuthProtectedMode } from './key.js'
 import { useAuth } from './useAuth.js'
 
-// Wszystko wewnątrz <AuthBoundary> ma "tryb chroniony" — useAuth() w tym poddrzewie
-// woła /me, polluje co 30s i odświeża po focusie. Poza boundary useAuth() zwraca
-// user: null bez żadnych requestów.
-//
-// Sloty:
-//   - default: zawartość chroniona, renderowana gdy user się zalogował.
-//   - fallback: renderowany podczas pierwszego /me lub gdy user nie ma sesji.
-//
-// Props:
-//   - onUnauthorized?: () => void — wołane gdy /me się nie udało (typowo redirect na /login).
+// API symetryczne do React AuthBoundary. Patrz tamtejszy plik dla pełnej dokumentacji.
 export const AuthBoundary = defineComponent({
   name: 'AuthBoundary',
   props: {
+    mode: {
+      type: String as PropType<AuthProtectedMode>,
+      default: 'protected',
+    },
+    requireRoles: {
+      type: Array as PropType<string[]>,
+      default: undefined,
+    },
+    requireAnyRole: {
+      type: Array as PropType<string[]>,
+      default: undefined,
+    },
     onUnauthorized: {
+      type: Function as PropType<() => void>,
+      default: undefined,
+    },
+    onForbidden: {
+      type: Function as PropType<() => void>,
+      default: undefined,
+    },
+    onAuthenticated: {
       type: Function as PropType<() => void>,
       default: undefined,
     },
   },
   setup(props, { slots }) {
-    provide(AUTH_PROTECTED_KEY, true)
-    const { user, isLoading, isAuthenticated, error } = useAuth()
+    provide(AUTH_PROTECTED_KEY, props.mode)
+    const { user, isLoading, error } = useAuth()
+
+    const hasRequiredRoles = computed(() => {
+      if (props.mode !== 'protected') return true
+      if (!user.value) return false
+      const userRoles = user.value.roles ?? []
+      if (props.requireRoles && props.requireRoles.length > 0) {
+        return props.requireRoles.every((r) => userRoles.includes(r))
+      }
+      if (props.requireAnyRole && props.requireAnyRole.length > 0) {
+        return props.requireAnyRole.some((r) => userRoles.includes(r))
+      }
+      return true
+    })
 
     watch(
-      [isLoading, isAuthenticated, error],
-      ([loading, authed, err]) => {
-        if (!props.onUnauthorized) return
-        if (!loading && !authed && err) {
-          props.onUnauthorized()
+      [isLoading, user, error, hasRequiredRoles],
+      ([loading, u, err, hasRoles]) => {
+        if (loading) return
+        if (props.mode === 'protected') {
+          if (!u) {
+            if (err || !loading) props.onUnauthorized?.()
+            return
+          }
+          if (!hasRoles) (props.onForbidden ?? props.onUnauthorized)?.()
+          return
+        }
+        if (props.mode === 'guest' && u) {
+          props.onAuthenticated?.()
         }
       },
       { immediate: true },
@@ -37,7 +69,12 @@ export const AuthBoundary = defineComponent({
 
     return () => {
       if (isLoading.value) return slots.fallback?.() ?? null
-      if (!user.value) return slots.fallback?.() ?? null
+      if (props.mode === 'protected') {
+        if (!user.value || !hasRequiredRoles.value) return slots.fallback?.() ?? null
+        return slots.default?.()
+      }
+      // guest
+      if (user.value) return slots.fallback?.() ?? null
       return slots.default?.()
     }
   },

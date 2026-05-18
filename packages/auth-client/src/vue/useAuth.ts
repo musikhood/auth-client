@@ -31,10 +31,19 @@ export type UseAuthLogout = CallableMutation<LogoutResponse, Error, void>
 
 export function useAuth() {
   const client = useAuthClient()
-  // Tryb chroniony aktywny tylko wewnątrz <AuthBoundary>.
-  const isProtected = inject(AUTH_PROTECTED_KEY, false)
+  // null poza boundary, 'protected' / 'guest' wewnątrz.
+  const mode = inject(AUTH_PROTECTED_KEY, null)
 
-  const me = useMe({ enabled: isProtected })
+  const enabled = mode !== null
+  const configInterval = client.config.meRefetchInterval
+  const refetchInterval =
+    mode !== 'protected'
+      ? (false as const)
+      : configInterval === false
+        ? (false as const)
+        : (configInterval ?? 30_000)
+
+  const me = useMe({ enabled, refetchInterval })
   const loginMutation = useLogin()
   const logoutMutation = useLogout()
 
@@ -43,12 +52,10 @@ export function useAuth() {
 
   return {
     client,
-    user: computed(() => (isProtected ? (me.data.value ?? null) : null)),
-    isLoading: computed(() => (isProtected ? me.isLoading.value : false)),
-    isAuthenticated: computed(() =>
-      isProtected ? !me.isError.value && me.data.value != null : false,
-    ),
-    error: computed(() => (isProtected ? me.error.value : null)),
+    user: computed(() => (enabled ? (me.data.value ?? null) : null)),
+    isLoading: computed(() => (enabled ? me.isLoading.value : false)),
+    isAuthenticated: computed(() => (enabled ? !me.isError.value && me.data.value != null : false)),
+    error: computed(() => (enabled ? me.error.value : null)),
     refetch: me.refetch,
     login,
     logout,
