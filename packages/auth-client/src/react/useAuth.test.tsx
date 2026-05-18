@@ -3,17 +3,19 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { createAuthClient } from '../core/client.js'
 import { AuthProvider } from './AuthProvider.js'
-import { AuthBoundary } from './AuthBoundary.js'
+import { AuthProtectedContext } from './context.js'
 import { useAuth } from './useAuth.js'
 import { BASE_URL, state } from '../test/server.js'
 
-// Wrapper dla trybu chronionego: AuthProvider + AuthBoundary.
+// Wrapper dla trybu chronionego — testujemy useAuth(), nie boundary,
+// więc używamy bezpośrednio AuthProtectedContext.Provider (boundary ma
+// osobny test file gdzie sprawdzamy fallback/onUnauthorized).
 // Świadomie BEZ <QueryClientProvider> — testujemy auto-fallback.
 function protectedWrapper({ children }: { children: ReactNode }) {
   const client = createAuthClient({ baseUrl: BASE_URL })
   return (
     <AuthProvider client={client}>
-      <AuthBoundary>{children}</AuthBoundary>
+      <AuthProtectedContext.Provider value={true}>{children}</AuthProtectedContext.Provider>
     </AuthProvider>
   )
 }

@@ -22,7 +22,9 @@ npm i @tanstack/vue-query
 
 1. Tworzysz `authClient` raz, na starcie aplikacji.
 2. Owijasz appkę w `<AuthProvider client={authClient}>`.
-3. **Chronione** części aplikacji owijasz dodatkowo w `<AuthBoundary>`. Tylko wewnątrz tej granicy `useAuth()` woła `/api/v1/user/me`, polluje co 30s i odświeża po focusie okna.
+3. **Chronione** części aplikacji owijasz dodatkowo w `<AuthBoundary>`. Tylko wewnątrz tej granicy `useAuth()` woła `/api/v1/user/me`, polluje co 30s i odświeża po focusie okna. Dwa opcjonalne propy:
+   - `fallback` — renderowany podczas pierwszego `/me` lub gdy user nie ma sesji (typowo `<Spinner/>` albo skeleton).
+   - `onUnauthorized` — wołane gdy `/me` się nie udało (typowo `navigate('/login')`).
 4. W komponentach piszesz `const { user, login, logout } = useAuth()`. Tyle.
 
 ```
@@ -61,7 +63,10 @@ export function App() {
         <Route
           path="/*"
           element={
-            <AuthBoundary>
+            <AuthBoundary
+              fallback={<Spinner />}
+              onUnauthorized={() => navigate('/login', { replace: true })}
+            >
               <ProtectedApp />
             </AuthBoundary>
           }
