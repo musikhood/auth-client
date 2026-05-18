@@ -1,5 +1,8 @@
 # @musikhood-dev/auth-client
 
+[![npm](https://img.shields.io/npm/v/@musikhood-dev/auth-client.svg)](https://www.npmjs.com/package/@musikhood-dev/auth-client)
+[![license](https://img.shields.io/npm/l/@musikhood-dev/auth-client.svg)](./LICENSE)
+
 Wspólny klient auth dla frontendów React i Vue 3.
 
 - **Jeden komponent**: `<AuthBoundary>` dla tras chronionych i publicznych.
