@@ -227,15 +227,24 @@ const { user, logout } = useAuth()
 
 ## `<AuthBoundary>` — pełny kontrakt
 
-| Prop              | Typ                        | Default                      | Opis                                                                                                 |
-| ----------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `mode`            | `"protected"` \| `"guest"` | `"protected"`                | `protected`: wymaga zalogowanego usera + polling /me. `guest`: wymaga NIE-zalogowanego (np. /login). |
-| `fallback`        | `ReactNode` / slot         | `null`                       | Renderowane podczas ładowania /me LUB gdy warunki dostępu niespełnione.                              |
-| `requireRoles`    | `string[]`                 | —                            | (`protected`) User musi mieć WSZYSTKIE wymienione role (AND).                                        |
-| `requireAnyRole`  | `string[]`                 | —                            | (`protected`) User musi mieć PRZYNAJMNIEJ JEDNĄ z ról (OR).                                          |
-| `onUnauthorized`  | `() => void`               | —                            | (`protected`) Brak sesji / refresh fail.                                                             |
-| `onForbidden`     | `() => void`               | fallback do `onUnauthorized` | (`protected`) Sesja jest, ale brak ról.                                                              |
-| `onAuthenticated` | `() => void`               | —                            | (`guest`) User JEST zalogowany — typowo redirect na `/`.                                             |
+| Prop              | Typ                        | Default                      | Opis                                                                                                   |
+| ----------------- | -------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `mode`            | `"protected"` \| `"guest"` | `"protected"`                | `protected`: wymaga zalogowanego usera + polling /me. `guest`: strona publiczna (np. /login).          |
+| `fallback`        | `ReactNode` / slot         | `null`                       | Renderowane podczas ładowania /me LUB gdy warunki dostępu niespełnione.                                |
+| `requireRoles`    | `string[]`                 | —                            | (`protected`) User musi mieć WSZYSTKIE wymienione role (AND).                                          |
+| `requireAnyRole`  | `string[]`                 | —                            | (`protected`) User musi mieć PRZYNAJMNIEJ JEDNĄ z ról (OR).                                            |
+| `onUnauthorized`  | `() => void`               | —                            | (`protected`) Brak sesji / refresh fail.                                                               |
+| `onForbidden`     | `() => void`               | fallback do `onUnauthorized` | (`protected`) Sesja jest, ale brak ról.                                                                |
+| `onAuthenticated` | `() => void`               | —                            | (`guest`) User JEST zalogowany — typowo redirect na `/`. **Opt-in dla sprawdzania /me** (patrz niżej). |
+
+### `mode="guest"` — sprawdzanie /me jest opt-in
+
+Strona z `mode="guest"` ma dwa subtryby zależne od obecności propu `onAuthenticated`:
+
+| Wariant                                                        | Co paczka robi                                                                           | Kiedy używać                                                                                      |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `<AuthBoundary mode="guest">`                                  | **NIE woła /me**. Renderuje children natychmiast.                                        | Domyślnie. Strona logowania bez auto-redirect zalogowanego usera. Zero requestów na świeży mount. |
+| `<AuthBoundary mode="guest" onAuthenticated={() => nav('/')}>` | Woła /me **raz** (bez pollingu). Jeśli user zalogowany → callback. Jeśli nie → children. | Gdy chcesz auto-redirect zalogowanego usera **albo** cross-tab login sync (patrz niżej).          |
 
 ## `useAuth()` — pełny kształt
 
@@ -278,9 +287,9 @@ createAuthClient({
 
 Gdy włączone, paczka używa BroadcastChannel (fallback: storage event) żeby synchronizować sesję między tabami tego samego origin:
 
-- Logout w tabie A → tab B dostaje lokalny event `unauthorized` → AuthBoundary woła `onUnauthorized` → redirect.
-- Login w tabie A → tab B unieważnia query /me → svieży user się ładuje.
-- Refresh fail (`unauthorized`) w tabie A → tab B również się wylogowuje.
+- **Logout w tabie A → tab B się wylogowuje**. Działa zawsze: tab B w trybie protected ma `useMe` enabled, broadcast unieważnia query, `AuthBoundary` woła `onUnauthorized` → redirect.
+- **Refresh fail w tabie A → tab B się wylogowuje**. Tak samo.
+- **Login w tabie A → tab B przechodzi na chronioną stronę** — działa **tylko** gdy tab B na `/login` ma `<AuthBoundary mode="guest" onAuthenticated={...}>` (z callbackiem). Bez `onAuthenticated` tab B nie sprawdza /me, więc nie zauważy zmiany. Patrz [`mode="guest"`](#modeguest--sprawdzanie-me-jest-opt-in).
 
 Działa tylko na tym samym origin (cross-origin BroadcastChannel jest zablokowane).
 

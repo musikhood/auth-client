@@ -37,10 +37,19 @@ export type AuthBoundaryProps = {
 
 // Wszystko wewnątrz <AuthBoundary> ma "tryb chroniony" (lub "guest") — useAuth() w tym
 // poddrzewie woła /me. Polling tylko w trybie "protected".
+//
+// W trybie "guest" wołanie /me jest opt-in przez podanie onAuthenticated:
+//   <AuthBoundary mode="guest">…</AuthBoundary>
+//     → NIE strzela /me. Zakładamy że user jest niezalogowany, renderujemy children.
+//   <AuthBoundary mode="guest" onAuthenticated={() => nav('/')}>…</AuthBoundary>
+//     → Strzela /me raz. Jeśli user jest zalogowany → onAuthenticated → callback.
 export function AuthBoundary(props: AuthBoundaryProps) {
   const mode = props.mode ?? 'protected'
+  // Guest bez callbacka = nie sprawdzamy sesji. Guest z callbackiem = sprawdzamy.
+  const contextMode =
+    mode === 'guest' ? (props.onAuthenticated ? 'guest-checking' : 'guest-passive') : 'protected'
   return (
-    <AuthProtectedContext.Provider value={mode}>
+    <AuthProtectedContext.Provider value={contextMode}>
       <AuthBoundaryInner {...props} />
     </AuthProtectedContext.Provider>
   )

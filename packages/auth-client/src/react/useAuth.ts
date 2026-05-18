@@ -52,13 +52,16 @@ export function useAuth() {
   // Kontekst boundary — null poza boundary, 'protected' / 'guest' wewnątrz.
   const mode = useContext(AuthProtectedContext)
 
-  // /me strzelamy w obu trybach boundary (protected + guest), ALE NIE jeśli
-  // sesja jest "expired" (po logout / refresh fail). Bez tego pętla:
-  // refetch → 401 → refresh fail → unauthorized event → refetch → ...
-  // Reset 'expired' następuje przy login().
+  // /me strzelamy gdy:
+  //   - mode === 'protected'      (chroniona trasa, sprawdzamy + polluje)
+  //   - mode === 'guest-checking' (publiczna trasa Z onAuthenticated, sprawdzamy raz)
+  // NIE strzelamy gdy:
+  //   - mode === null             (poza boundary)
+  //   - mode === 'guest-passive'  (publiczna trasa BEZ onAuthenticated — formularz od razu)
+  //   - sessionExpired === true   (po logout / refresh fail, czeka na nowy login)
   const sessionExpired = useSessionExpired(client)
-  const enabled = mode !== null && !sessionExpired
-  // Domyślny interval z configu klienta (jeśli ustawiono meRefetchInterval).
+  const enabled = (mode === 'protected' || mode === 'guest-checking') && !sessionExpired
+  // Polling tylko w trybie 'protected'.
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
     mode !== 'protected'
@@ -84,12 +87,24 @@ export function useAuth() {
 
   // Poza boundary user jest zawsze null (nie wołamy /me, więc nie wiemy nic).
   // Wewnątrz boundary (protected lub guest) user przychodzi z meQuery.
+  //
+  // Gdy sessionExpired: wiemy że sesji NIE MA — wymuszamy isLoading=false,
+  // user=null, error=sentinel (żeby AuthBoundary nie tkwił w spinnerze).
+  // Bez tego scenariusz: useMe leci → 401 → refresh fail → emit unauthorized
+  // → sessionExpired=true → useMe dostaje enabled:false IN-FLIGHT, ale jego
+  // ostatni snapshot isLoading=true. Boundary by tkwił w spinnerze na zawsze.
+  const sessionExpiredError = sessionExpired && !meQuery.error ? new Error('Session expired') : null
+
   return {
     client,
-    user: enabled ? (meQuery.data ?? null) : null,
-    isLoading: enabled ? meQuery.isLoading : false,
-    isAuthenticated: enabled ? !meQuery.isError && meQuery.data != null : false,
-    error: enabled ? meQuery.error : null,
+    user: sessionExpired ? null : (meQuery.data ?? null),
+    isLoading: sessionExpired ? false : enabled ? meQuery.isLoading : false,
+    isAuthenticated: sessionExpired
+      ? false
+      : enabled
+        ? !meQuery.isError && meQuery.data != null
+        : false,
+    error: sessionExpired ? (meQuery.error ?? sessionExpiredError) : enabled ? meQuery.error : null,
     refetch: meQuery.refetch,
     login,
     logout,

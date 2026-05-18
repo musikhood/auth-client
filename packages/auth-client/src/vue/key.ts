@@ -3,8 +3,8 @@ import type { AuthClient } from '../core/client.js'
 
 export const AUTH_CLIENT_KEY: InjectionKey<AuthClient> = Symbol('@musikhood-dev/auth-client')
 
-// Tryb boundary — null poza boundary, 'protected' / 'guest' wewnątrz.
-export type AuthProtectedMode = 'protected' | 'guest'
+// Patrz: src/react/context.ts — te same wartości w obu adapterach.
+export type AuthProtectedMode = 'protected' | 'guest-passive' | 'guest-checking'
 export const AUTH_PROTECTED_KEY: InjectionKey<AuthProtectedMode | null> = Symbol(
   '@musikhood-dev/auth-client/protected',
 )

@@ -1,13 +1,16 @@
 import { computed, defineComponent, provide, ref, watch, type PropType } from 'vue'
-import { AUTH_PROTECTED_KEY, type AuthProtectedMode } from './key.js'
+import { AUTH_PROTECTED_KEY } from './key.js'
 import { useAuth } from './useAuth.js'
+
+// Publiczny tryb props — taki sam jak w React.
+export type AuthBoundaryPublicMode = 'protected' | 'guest'
 
 // API symetryczne do React AuthBoundary. Patrz tamtejszy plik dla pełnej dokumentacji.
 export const AuthBoundary = defineComponent({
   name: 'AuthBoundary',
   props: {
     mode: {
-      type: String as PropType<AuthProtectedMode>,
+      type: String as PropType<AuthBoundaryPublicMode>,
       default: 'protected',
     },
     requireRoles: {
@@ -32,7 +35,14 @@ export const AuthBoundary = defineComponent({
     },
   },
   setup(props, { slots }) {
-    provide(AUTH_PROTECTED_KEY, props.mode)
+    // Guest bez callbacka onAuthenticated = nie sprawdzamy /me. Z callbackiem = sprawdzamy.
+    const contextMode =
+      props.mode === 'guest'
+        ? props.onAuthenticated
+          ? 'guest-checking'
+          : 'guest-passive'
+        : 'protected'
+    provide(AUTH_PROTECTED_KEY, contextMode)
     const { user, isLoading, error } = useAuth()
 
     const hasRequiredRoles = computed(() => {

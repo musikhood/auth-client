@@ -49,7 +49,11 @@ export function useAuth() {
     offUnauthorized()
   })
 
-  const enabled = computed(() => mode !== null && !sessionExpired.value)
+  // /me strzelamy w 'protected' oraz 'guest-checking' (guest z onAuthenticated).
+  // 'guest-passive' i null = nie strzelamy.
+  const enabled = computed(
+    () => (mode === 'protected' || mode === 'guest-checking') && !sessionExpired.value,
+  )
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
     mode !== 'protected'
@@ -65,14 +69,32 @@ export function useAuth() {
   const login = makeCallable(loginMutation)
   const logout = makeCallable(logoutMutation)
 
+  // sessionExpired = true: wymuszamy "wiemy że sesji nie ma" — bez tego boundary
+  // tkwiłby w spinnerze gdy useMe został wyłączony w trakcie pending request.
+  const sessionExpiredError = computed(() =>
+    sessionExpired.value && !me.error.value ? new Error('Session expired') : null,
+  )
+
   return {
     client,
-    user: computed(() => (enabled.value ? (me.data.value ?? null) : null)),
-    isLoading: computed(() => (enabled.value ? me.isLoading.value : false)),
-    isAuthenticated: computed(() =>
-      enabled.value ? !me.isError.value && me.data.value != null : false,
+    user: computed(() => (sessionExpired.value ? null : (me.data.value ?? null))),
+    isLoading: computed(() =>
+      sessionExpired.value ? false : enabled.value ? me.isLoading.value : false,
     ),
-    error: computed(() => (enabled.value ? me.error.value : null)),
+    isAuthenticated: computed(() =>
+      sessionExpired.value
+        ? false
+        : enabled.value
+          ? !me.isError.value && me.data.value != null
+          : false,
+    ),
+    error: computed(() =>
+      sessionExpired.value
+        ? (me.error.value ?? sessionExpiredError.value)
+        : enabled.value
+          ? me.error.value
+          : null,
+    ),
     refetch: me.refetch,
     login,
     logout,
