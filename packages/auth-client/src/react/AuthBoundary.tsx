@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { AuthProtectedContext } from './context.js'
 import { useAuth } from './useAuth.js'
 
@@ -72,32 +72,52 @@ function AuthBoundaryInner({
     return true
   }, [mode, user, requireRoles, requireAnyRole])
 
-  // Wywołania callbacków — w useEffect, żeby nie odpalać side effect podczas renderu.
+  // KLUCZOWE: callbacks są w refs, NIE w deps useEffect.
+  // Bez tego każdy nowy callback (inline arrow w propsie konsumenta) re-triggerował
+  // effect i robił nieskończoną pętlę redirect→remount→redirect.
+  const cbRefs = useRef({ onUnauthorized, onForbidden, onAuthenticated })
+  cbRefs.current = { onUnauthorized, onForbidden, onAuthenticated }
+
+  // Drugi guard: NIE wołaj tego samego callbacku dwa razy z rzędu dla tego samego stanu.
+  // Bez tego: focus okna → useMe refetch → 401 → SessionExpiredError → effect → onUnauthorized
+  // → navigate → re-mount → znowu cały cykl.
+  const lastFired = useRef<'unauthorized' | 'forbidden' | 'authenticated' | null>(null)
+
   useEffect(() => {
     if (isLoading) return
 
     if (mode === 'protected') {
-      // Brak sesji.
       if (!user) {
-        if (error || !isLoading) {
-          onUnauthorized?.()
+        // Brak sesji po zakończonym ładowaniu — fire raz. Ref guard chroni przed
+        // pętlą gdy callback navigation triggeruje re-mount.
+        if (lastFired.current !== 'unauthorized') {
+          lastFired.current = 'unauthorized'
+          cbRefs.current.onUnauthorized?.()
         }
         return
       }
-      // Sesja jest, ale brak ról.
+      // Sesja jest.
       if (!hasRequiredRoles) {
-        ;(onForbidden ?? onUnauthorized)?.()
+        if (lastFired.current !== 'forbidden') {
+          lastFired.current = 'forbidden'
+          ;(cbRefs.current.onForbidden ?? cbRefs.current.onUnauthorized)?.()
+        }
+        return
       }
+      // Sesja + role OK — reset guarda (przy następnym wylogowaniu effect zadziała).
+      lastFired.current = null
       return
     }
 
     if (mode === 'guest') {
-      // Jest sesja — przekieruj.
-      if (user) {
-        onAuthenticated?.()
+      if (user && lastFired.current !== 'authenticated') {
+        lastFired.current = 'authenticated'
+        cbRefs.current.onAuthenticated?.()
+      } else if (!user) {
+        lastFired.current = null
       }
     }
-  }, [isLoading, user, error, mode, hasRequiredRoles, onUnauthorized, onForbidden, onAuthenticated])
+  }, [isLoading, user, error, mode, hasRequiredRoles])
 
   if (isLoading) return <>{fallback}</>
 

@@ -49,6 +49,22 @@ describe('<AuthBoundary>', () => {
     expect(screen.queryByTestId('protected')).toBeNull()
   })
 
+  it('onUnauthorized wywoływany TYLKO RAZ przy failed sesji (brak pętli)', async () => {
+    state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
+    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+
+    const onUnauthorized = vi.fn()
+    setup({ fallback: <div data-testid="fb">…</div>, onUnauthorized })
+
+    await waitFor(() => {
+      expect(onUnauthorized).toHaveBeenCalled()
+    })
+    // Daj czas żeby ewentualna pętla się pokazała (refetch + re-render).
+    await new Promise((r) => setTimeout(r, 200))
+    // Mimo upływu czasu: TYLKO jedno wywołanie. Bez ref guard byłoby N.
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+  })
+
   it('bez fallback i bez usera nie renderuje nic', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }

@@ -48,6 +48,11 @@ export type AuthClient = {
   isAuthenticated(): boolean
   getCachedUser(): AuthUser | null
 
+  // True jeśli ostatnia sesja umarła (logout / refresh fail). Adaptery używają tego
+  // do disabledowania useMe — bez tego mielibyśmy pętlę refetch→401→refetch.
+  // Reset na false dopiero przy nowym login().
+  isSessionExpired(): boolean
+
   on<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): () => void
   off<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): void
 
@@ -89,6 +94,10 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   }
 
   let cachedUser: AuthUser | null = null
+  // 'fresh': nigdy nie próbowaliśmy /me, useMe może strzelić.
+  // 'expired': ostatnia sesja umarła (logout / refresh fail). useMe NIE strzela
+  //            dopóki ktoś nie zawoła login() — bez tego pętla refetch→401→refetch.
+  let sessionState: 'fresh' | 'expired' = 'fresh'
 
   const setUser = (user: AuthUser | null) => {
     const changed =
@@ -99,6 +108,13 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
   emitter.on('unauthorized', () => {
     cachedUser = null
+    sessionState = 'expired'
+  })
+  emitter.on('logout', () => {
+    sessionState = 'expired'
+  })
+  emitter.on('login', () => {
+    sessionState = 'fresh'
   })
 
   const request = async <T>(rc: RequestConfig): Promise<T> => {
@@ -223,6 +239,10 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
     getCachedUser() {
       return cachedUser
+    },
+
+    isSessionExpired() {
+      return sessionState === 'expired'
     },
 
     on(event, handler) {

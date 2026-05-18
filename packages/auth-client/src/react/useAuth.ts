@@ -1,11 +1,31 @@
-import { useContext, useMemo } from 'react'
+import { useContext, useMemo, useSyncExternalStore } from 'react'
 import type { UseMutationResult } from '@tanstack/react-query'
 import { useMe } from './useMe.js'
 import { useLogin } from './useLogin.js'
 import { useLogout } from './useLogout.js'
 import { useAuthClient } from './useAuthClient.js'
 import { AuthProtectedContext } from './context.js'
+import type { AuthClient } from '../core/client.js'
 import type { LoginCredentials, TokenResponse, LogoutResponse } from '../core/types.js'
+
+// Subskrypcja na sessionState klienta. Zwraca aktualne `isSessionExpired()`,
+// triggeruje re-render gdy klient emituje login/logout/unauthorized.
+function useSessionExpired(client: AuthClient): boolean {
+  return useSyncExternalStore(
+    (callback) => {
+      const offLogin = client.on('login', callback)
+      const offLogout = client.on('logout', callback)
+      const offUnauthorized = client.on('unauthorized', callback)
+      return () => {
+        offLogin()
+        offLogout()
+        offUnauthorized()
+      }
+    },
+    () => client.isSessionExpired(),
+    () => false, // SSR: na serwerze "fresh" — i tak useMe nie pójdzie bez window
+  )
+}
 
 // Callable wrapper nad UseMutationResult — funkcja, która:
 //   - wołana jak funkcja, robi mutateAsync (zwraca Promise),
@@ -32,9 +52,12 @@ export function useAuth() {
   // Kontekst boundary — null poza boundary, 'protected' / 'guest' wewnątrz.
   const mode = useContext(AuthProtectedContext)
 
-  // /me strzelamy w obu trybach boundary (protected + guest).
-  // Polling tylko w 'protected'.
-  const enabled = mode !== null
+  // /me strzelamy w obu trybach boundary (protected + guest), ALE NIE jeśli
+  // sesja jest "expired" (po logout / refresh fail). Bez tego pętla:
+  // refetch → 401 → refresh fail → unauthorized event → refetch → ...
+  // Reset 'expired' następuje przy login().
+  const sessionExpired = useSessionExpired(client)
+  const enabled = mode !== null && !sessionExpired
   // Domyślny interval z configu klienta (jeśli ustawiono meRefetchInterval).
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =

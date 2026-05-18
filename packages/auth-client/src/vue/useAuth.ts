@@ -1,4 +1,4 @@
-import { computed, inject } from 'vue'
+import { computed, inject, onScopeDispose, ref } from 'vue'
 import type { UseMutationReturnType } from '@tanstack/vue-query'
 import { useAuthClient } from './useAuthClient.js'
 import { useMe } from './useMe.js'
@@ -34,7 +34,22 @@ export function useAuth() {
   // null poza boundary, 'protected' / 'guest' wewnątrz.
   const mode = inject(AUTH_PROTECTED_KEY, null)
 
-  const enabled = mode !== null
+  // Reactive flag — re-renderuje gdy session umiera/wraca.
+  // Bez tego useMe pollowałby na ślepo po logout (pętla refetch → 401).
+  const sessionExpired = ref(client.isSessionExpired())
+  const updateExpired = () => {
+    sessionExpired.value = client.isSessionExpired()
+  }
+  const offLogin = client.on('login', updateExpired)
+  const offLogout = client.on('logout', updateExpired)
+  const offUnauthorized = client.on('unauthorized', updateExpired)
+  onScopeDispose(() => {
+    offLogin()
+    offLogout()
+    offUnauthorized()
+  })
+
+  const enabled = computed(() => mode !== null && !sessionExpired.value)
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
     mode !== 'protected'
@@ -52,10 +67,12 @@ export function useAuth() {
 
   return {
     client,
-    user: computed(() => (enabled ? (me.data.value ?? null) : null)),
-    isLoading: computed(() => (enabled ? me.isLoading.value : false)),
-    isAuthenticated: computed(() => (enabled ? !me.isError.value && me.data.value != null : false)),
-    error: computed(() => (enabled ? me.error.value : null)),
+    user: computed(() => (enabled.value ? (me.data.value ?? null) : null)),
+    isLoading: computed(() => (enabled.value ? me.isLoading.value : false)),
+    isAuthenticated: computed(() =>
+      enabled.value ? !me.isError.value && me.data.value != null : false,
+    ),
+    error: computed(() => (enabled.value ? me.error.value : null)),
     refetch: me.refetch,
     login,
     logout,

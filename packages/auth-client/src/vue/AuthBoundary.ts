@@ -1,4 +1,4 @@
-import { computed, defineComponent, provide, watch, type PropType } from 'vue'
+import { computed, defineComponent, provide, ref, watch, type PropType } from 'vue'
 import { AUTH_PROTECTED_KEY, type AuthProtectedMode } from './key.js'
 import { useAuth } from './useAuth.js'
 
@@ -48,20 +48,39 @@ export const AuthBoundary = defineComponent({
       return true
     })
 
+    // Guard: nie wołaj tego samego callbacku dwa razy z rzędu dla tego samego stanu.
+    // Bez tego logout/refresh-fail wpadłby w pętlę (redirect → remount → ...).
+    const lastFired = ref<'unauthorized' | 'forbidden' | 'authenticated' | null>(null)
+
     watch(
       [isLoading, user, error, hasRequiredRoles],
       ([loading, u, err, hasRoles]) => {
         if (loading) return
         if (props.mode === 'protected') {
           if (!u) {
-            if (err || !loading) props.onUnauthorized?.()
+            if (lastFired.value !== 'unauthorized') {
+              lastFired.value = 'unauthorized'
+              props.onUnauthorized?.()
+            }
             return
           }
-          if (!hasRoles) (props.onForbidden ?? props.onUnauthorized)?.()
+          if (!hasRoles) {
+            if (lastFired.value !== 'forbidden') {
+              lastFired.value = 'forbidden'
+              ;(props.onForbidden ?? props.onUnauthorized)?.()
+            }
+            return
+          }
+          lastFired.value = null
           return
         }
-        if (props.mode === 'guest' && u) {
-          props.onAuthenticated?.()
+        if (props.mode === 'guest') {
+          if (u && lastFired.value !== 'authenticated') {
+            lastFired.value = 'authenticated'
+            props.onAuthenticated?.()
+          } else if (!u) {
+            lastFired.value = null
+          }
         }
       },
       { immediate: true },
