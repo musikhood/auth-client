@@ -2,7 +2,7 @@ import { useQuery, type UseQueryOptions, type UseQueryResult } from '@tanstack/r
 import type { AuthUser } from '../core/types.js'
 import { useAuthClient } from './useAuthClient.js'
 import { ME_QUERY_KEY } from './context.js'
-import { SessionExpiredError } from '../core/errors.js'
+import { ForbiddenRoleError, SessionExpiredError } from '../core/errors.js'
 
 export type UseMeOptions = Omit<
   UseQueryOptions<AuthUser, Error, AuthUser, typeof ME_QUERY_KEY>,
@@ -18,8 +18,9 @@ export function useMe(options?: UseMeOptions): UseQueryResult<AuthUser, Error> {
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
-      // Sesja wygasła = nie ma sensu retryować, idziemy od razu w error state.
+      // Stany terminalne — nie retryujemy, paczka już zrobiła cleanup + redirect.
       if (error instanceof SessionExpiredError) return false
+      if (error instanceof ForbiddenRoleError) return false
       return failureCount < 1
     },
     ...options,

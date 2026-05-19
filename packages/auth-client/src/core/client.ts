@@ -61,6 +61,11 @@ export type AuthClient = {
   // Adaptery (AuthBoundary) używają tego do redirectów na login/home/forbidden paths.
   redirectTo(path: string): void
 
+  // Podstawia funkcję navigate po starcie — używane przez AuthProvider żeby
+  // wpiąć React Router/Vue Router navigate (soft navigation) zamiast hard reload.
+  // Konsument zwykle nie woła bezpośrednio — przekazuje `navigate` prop do AuthProvider.
+  setRedirect(fn: ((path: string) => void) | null): void
+
   on<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): () => void
   off<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): void
 
@@ -76,11 +81,13 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   const emitter = createAuthEmitter()
 
   // Funkcja redirect — używana przez paczkę gdy potrzebuje przekierować usera
-  // (na login, home, forbidden). Domyślnie `window.location.href`. Konsument może
-  // dostarczyć własną (np. integracja z routerem SPA).
-  // Wbudowany pathname guard: paczka nigdy nie redirectuje gdy już jesteś tutaj
-  // (zapobiega pętlom).
-  const userRedirect = config.redirect
+  // (na login, home, forbidden). Domyślnie `window.location.href` (hard reload).
+  // Konsument może dostarczyć własną dwoma sposobami:
+  //   - `config.redirect` w createAuthClient (znana od razu)
+  //   - `setRedirect()` później (np. AuthProvider podstawia React Router navigate
+  //     po mount — wtedy paczka robi soft navigation)
+  // Wbudowany pathname guard: paczka nigdy nie redirectuje gdy już jesteś tutaj.
+  let userRedirect = config.redirect
   const redirect = (path: string) => {
     if (typeof window === 'undefined') return
     if (window.location.pathname === path) return
@@ -211,17 +218,18 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
           data: credentials,
         })
         emitter.emit('login', tokens)
-        // Cache /me unieważnia się po stronie adapterów (przez event lub query invalidate).
         return tokens
       } catch (err) {
+        let mapped: Error = err instanceof Error ? err : new Error(String(err))
         if (isAxiosError(err)) {
           const status = err.response?.status
           const message =
             (err.response?.data as { error?: string } | undefined)?.error ?? err.message
-          if (status === 401) throw new InvalidCredentialsError(message, err)
-          if (status === 403) throw new LoginForbiddenError(message, err)
+          if (status === 401) mapped = new InvalidCredentialsError(message, err)
+          else if (status === 403) mapped = new LoginForbiddenError(message, err)
         }
-        throw err
+        emitter.emit('login-error', mapped)
+        throw mapped
       }
     },
 
@@ -241,10 +249,13 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
         // czyścimy lokalny stan, żeby UI nie został w pół-zalogowany.
         setUser(null)
         emitter.emit('logout', undefined)
-        if (isAxiosError(err)) {
-          throw new AuthError(err.message, err.response?.status, err)
-        }
-        throw err
+        const mapped: Error = isAxiosError(err)
+          ? new AuthError(err.message, err.response?.status, err)
+          : err instanceof Error
+            ? err
+            : new Error(String(err))
+        emitter.emit('logout-error', mapped)
+        throw mapped
       } finally {
         suppressLogoutRedirect = false
       }
@@ -254,16 +265,16 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
       try {
         const user = await request<AuthUser>({ method: 'GET', url: ENDPOINTS.me })
         setUser(user)
-        // Panel-wide role gate — sprawdzamy zaraz po każdym /me.
-        // Jeśli user nie ma wymaganych ról, paczka go wylogowuje + redirectuje
-        // + emituje 'forbidden'. Mimo to ZWRACAMY usera — niech adaptery
-        // (useMe) zobaczą że request zakończył się sukcesem na poziomie HTTP.
-        // Nawigacja i tak nastąpi (window.location.href), więc UI nie zdąży
-        // wyrenderować chronionych części z tymi danymi.
+        // Panel-wide role gate — sprawdzamy zaraz po /me. Jeśli user nie ma ról:
+        // paczka go wylogowuje + redirectuje + emituje 'forbidden', a me()
+        // RZUCA ForbiddenRoleError zamiast zwracać usera. Bez tego adaptery
+        // dostawały usera, AuthBoundary widział `user != null` i odpalał
+        // home-redirect równolegle z forbidden-redirectem — race condition.
         if (panelRoles && panelRoles.length > 0) {
-          // Świadomie nie await-ujemy bez powodu — jeśli logout się robi,
-          // pochłaniamy go, ale me() musi się zakończyć szybko.
-          void enforcePanelRoles(user)
+          const ok = await enforcePanelRoles(user)
+          if (!ok) {
+            throw new ForbiddenRoleError(panelRoles, user.roles ?? [], panelRolesMode)
+          }
         }
         return user
       } catch (err) {
@@ -292,7 +303,9 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
         emitter.emit('unauthorized', undefined)
         emitter.emit('user-changed', null)
         if (loginPath) redirect(loginPath)
-        throw new SessionExpiredError('Session expired', err)
+        const mapped = new SessionExpiredError('Session expired', err)
+        emitter.emit('refresh-error', mapped)
+        throw mapped
       }
     },
 
@@ -334,6 +347,10 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
     redirectTo(path: string) {
       redirect(path)
+    },
+
+    setRedirect(fn) {
+      userRedirect = fn ?? undefined
     },
 
     on(event, handler) {

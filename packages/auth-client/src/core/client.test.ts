@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createAuthClient } from './client.js'
 import {
+  AuthError,
   ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
@@ -333,6 +334,50 @@ describe('redirect na loginPath', () => {
     expect(redirect).not.toHaveBeenCalled()
   })
 
+  it('setRedirect po starcie podstawia funkcję — używana w kolejnych redirectach', async () => {
+    const client = newClient({ loginPath: '/login' })
+    const softNav = vi.fn()
+    client.setRedirect(softNav)
+    await client.logout()
+    expect(softNav).toHaveBeenCalledWith('/login')
+  })
+
+  it('setRedirect nadpisuje wcześniejszy config.redirect', async () => {
+    const initial = vi.fn()
+    const softNav = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect: initial })
+    client.setRedirect(softNav)
+    await client.logout()
+    expect(softNav).toHaveBeenCalledWith('/login')
+    expect(initial).not.toHaveBeenCalled()
+  })
+
+  it('setRedirect(null) wraca do default (window.location)', async () => {
+    const softNav = vi.fn()
+    const client = newClient({ loginPath: '/login' })
+    client.setRedirect(softNav)
+    client.setRedirect(null)
+    const originalHref = window.location.href
+    let navigatedTo: string | null = null
+    Object.defineProperty(window.location, 'href', {
+      set(v: string) {
+        navigatedTo = v
+      },
+      get() {
+        return originalHref
+      },
+      configurable: true,
+    })
+    await client.logout()
+    expect(softNav).not.toHaveBeenCalled()
+    expect(navigatedTo).toBe('/login')
+    Object.defineProperty(window.location, 'href', {
+      value: originalHref,
+      writable: true,
+      configurable: true,
+    })
+  })
+
   it('domyślny redirect używa window.location.href z pathname guard', async () => {
     const originalHref = window.location.href
     let navigatedTo: string | null = null
@@ -399,7 +444,7 @@ describe('panel-wide requireRoles (config)', () => {
     expect(state.logoutCalls).toBe(0)
   })
 
-  it('user bez roli → me() loguje go, redirect na forbiddenPath, emit forbidden', async () => {
+  it('user bez roli → me() rzuca ForbiddenRoleError, logout, redirect, emit forbidden', async () => {
     state.meResponse = {
       status: 200,
       body: {
@@ -421,11 +466,12 @@ describe('panel-wide requireRoles (config)', () => {
     })
     client.on('forbidden', onForbidden)
 
-    await client.me() // me() zwraca usera mimo wszystko (HTTP się powiódł)
-    // enforcePanelRoles jest void async — czekamy aż się wykona.
-    await new Promise((r) => setTimeout(r, 50))
+    // me() rzuca ForbiddenRoleError — adaptery (useMe) widzą error, nie user.
+    // Bez tego AuthBoundary mode=guest dostałby user=ok i odpalił home-redirect
+    // równolegle z forbidden-redirectem.
+    await expect(client.me()).rejects.toBeInstanceOf(ForbiddenRoleError)
 
-    expect(state.logoutCalls).toBe(1) // automatyczny logout
+    expect(state.logoutCalls).toBe(1)
     expect(redirect).toHaveBeenCalledWith('/forbidden')
     expect(onForbidden).toHaveBeenCalledWith({
       requiredRoles: ['ROLE_ADMIN'],
@@ -479,8 +525,7 @@ describe('panel-wide requireRoles (config)', () => {
     })
     client.on('forbidden', onForbidden)
 
-    await client.me()
-    await new Promise((r) => setTimeout(r, 50))
+    await expect(client.me()).rejects.toBeInstanceOf(ForbiddenRoleError)
 
     expect(state.logoutCalls).toBe(1)
     expect(redirect).toHaveBeenCalledWith('/login')
@@ -517,18 +562,72 @@ describe('panel-wide requireRoles (config)', () => {
     })
     client.on('forbidden', onForbidden)
 
-    await client.me()
-    await new Promise((r) => setTimeout(r, 50))
+    await expect(client.me()).rejects.toBeInstanceOf(ForbiddenRoleError)
     expect(state.logoutCalls).toBe(1)
     expect(onForbidden).toHaveBeenCalledTimes(1)
     // Drugi me() (tak jak gdyby konsument świadomie wywołał) — drugi logout
     // + drugi forbidden. Brak pętli bo tylko jeden cykl jest wymuszony PER call.
-    await client.me()
-    await new Promise((r) => setTimeout(r, 50))
+    await expect(client.me()).rejects.toBeInstanceOf(ForbiddenRoleError)
     expect(state.logoutCalls).toBe(2)
     expect(onForbidden).toHaveBeenCalledTimes(2)
     // Liczba wywołań jest deterministyczna — me() wywołuje cycle, ale nie ma
     // wewnętrznej pętli paczki która by sama re-wołała me().
+  })
+})
+
+describe('error events (login-error, logout-error, refresh-error)', () => {
+  it('login fail emit login-error z odpowiednim typem błędu', async () => {
+    state.loginResponse = { status: 401, body: { error: 'Invalid credentials' } }
+    const onError = vi.fn()
+    const client = newClient()
+    client.on('login-error', onError)
+
+    await expect(client.login({ username: 'x', password: 'y' })).rejects.toBeInstanceOf(
+      InvalidCredentialsError,
+    )
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(InvalidCredentialsError)
+  })
+
+  it('login 403 emit login-error z LoginForbiddenError', async () => {
+    state.loginResponse = { status: 403, body: { error: 'Account disabled' } }
+    const onError = vi.fn()
+    const client = newClient()
+    client.on('login-error', onError)
+
+    await expect(client.login({ username: 'x', password: 'y' })).rejects.toBeInstanceOf(
+      LoginForbiddenError,
+    )
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(LoginForbiddenError)
+  })
+
+  it('logout 500 emit logout-error (mimo że lokalny stan i tak wyzerowany)', async () => {
+    state.logoutResponse = { status: 500, body: { error: 'Server error' } }
+    const onError = vi.fn()
+    const client = newClient()
+    client.on('logout-error', onError)
+
+    await expect(client.logout()).rejects.toBeInstanceOf(AuthError)
+    expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('refresh fail emit refresh-error', async () => {
+    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+    const onError = vi.fn()
+    const client = newClient()
+    client.on('refresh-error', onError)
+
+    await expect(client.refresh()).rejects.toBeInstanceOf(SessionExpiredError)
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(SessionExpiredError)
+  })
+
+  it('login sukces NIE emit login-error', async () => {
+    const onError = vi.fn()
+    const client = newClient()
+    client.on('login-error', onError)
+
+    await client.login({ username: 'jan', password: 'tajne' })
+    expect(onError).not.toHaveBeenCalled()
   })
 })
 

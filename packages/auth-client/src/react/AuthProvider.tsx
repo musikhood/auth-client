@@ -11,6 +11,10 @@ import { AuthClientContext, ME_QUERY_KEY } from './context.js'
 export type AuthProviderProps = {
   client: AuthClient
   children: ReactNode
+  // Opcjonalna funkcja nawigacji (np. React Router useNavigate). Gdy podana,
+  // paczka używa jej dla wszystkich redirectów zamiast `window.location.href`.
+  // Soft navigation = brak hard reloadu = toasty i state przeżywają redirect.
+  navigate?: (path: string) => void
 }
 
 // Wewnętrzny komponent — wpina eventy klienta w cache TanStack Query.
@@ -37,7 +41,23 @@ function AuthEventsBridge({ client }: { client: AuthClient }) {
   return null
 }
 
-export function AuthProvider({ client, children }: AuthProviderProps) {
+// Wpina prop `navigate` do clienta przez setRedirect. Zawsze odpiętypo unmount,
+// żeby stary navigate (np. po HMR) nie żył w referencji.
+function AuthRedirectBridge({
+  client,
+  navigate,
+}: {
+  client: AuthClient
+  navigate: (path: string) => void
+}) {
+  useEffect(() => {
+    client.setRedirect(navigate)
+    return () => client.setRedirect(null)
+  }, [client, navigate])
+  return null
+}
+
+export function AuthProvider({ client, children, navigate }: AuthProviderProps) {
   // Sprawdzamy czy konsument ma własny QueryClientProvider w drzewie.
   // Jeśli tak — używamy jego (dzieli cache z resztą aplikacji).
   // Jeśli nie — robimy fallback, żeby paczka działała "out of the box".
@@ -47,6 +67,7 @@ export function AuthProvider({ client, children }: AuthProviderProps) {
   const inner = (
     <AuthClientContext.Provider value={client}>
       <AuthEventsBridge client={client} />
+      {navigate ? <AuthRedirectBridge client={client} navigate={navigate} /> : null}
       {children}
     </AuthClientContext.Provider>
   )

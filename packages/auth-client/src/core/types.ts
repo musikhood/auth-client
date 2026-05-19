@@ -91,6 +91,12 @@ export type AuthEvents = {
   'user-changed': AuthUser | null
   login: AuthUser | TokenResponse
   forbidden: ForbiddenPayload
+  // Error eventy — emitowane gdy odpowiednia metoda (login/logout/refresh) rzuca.
+  // Konsument może podłączyć listener i np. pokazać toast bez try/catch w komponencie.
+  // Uwaga: błąd JEST nadal rzucany z metody — eventy to dodatkowa droga, nie zastępują.
+  'login-error': Error
+  'logout-error': Error
+  'refresh-error': Error
 }
 
 export type AuthEventName = keyof AuthEvents

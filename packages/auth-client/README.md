@@ -84,12 +84,15 @@ export const authClient = createAuthClient({
 
 // App.tsx
 import { AuthProvider, AuthBoundary, useAuth } from '@musikhood-dev/auth-client/react'
-import { Routes, Route } from 'react-router'
+import { Routes, Route, useNavigate } from 'react-router'
 import { authClient } from './lib/auth'
 
 export function App() {
+  // (opcjonalnie) navigate prop — paczka używa go zamiast window.location.href.
+  // Soft navigation = brak hard reloadu = toasty przeżywają redirect.
+  const navigate = useNavigate()
   return (
-    <AuthProvider client={authClient}>
+    <AuthProvider client={authClient} navigate={(path) => navigate(path, { replace: true })}>
       <Routes>
         <Route
           path="/login"
@@ -156,7 +159,12 @@ import { createApp } from 'vue'
 import { VueQueryPlugin } from '@tanstack/vue-query'
 import { createAuthClient } from '@musikhood-dev/auth-client'
 import { createAuth } from '@musikhood-dev/auth-client/vue'
+import { createRouter } from 'vue-router'
 import App from './App.vue'
+
+const router = createRouter({
+  /* ... */
+})
 
 const authClient = createAuthClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL,
@@ -167,7 +175,9 @@ const authClient = createAuthClient({
 
 const app = createApp(App)
 app.use(VueQueryPlugin) // wymagane przed createAuth
-app.use(createAuth(authClient))
+app.use(router)
+// (opcjonalnie) navigate — paczka używa go zamiast window.location.href.
+app.use(createAuth(authClient, { navigate: (path) => router.push(path) }))
 app.mount('#app')
 ```
 
@@ -384,7 +394,13 @@ authClient.on('login', (tokens) => {})
 authClient.on('logout', () => {})
 authClient.on('unauthorized', () => {})
 authClient.on('user-changed', (user) => {})
+authClient.on('forbidden', ({ requiredRoles, userRoles, mode }) => {})
+authClient.on('login-error', (err) => {})    // np. toast.error po fail login
+authClient.on('logout-error', (err) => {})   // np. toast.error po fail logout
+authClient.on('refresh-error', (err) => {})  // np. analytics / monitoring
 ```
+
+Error eventy lecą równolegle do `throw` z metod — czyli `client.login()` i tak rzuca, ale dodatkowo emit pozwala konsumentowi obsłużyć błąd deklaratywnie (toast w jednym miejscu zamiast try/catch w każdym komponencie).
 
 ## Wsparcie
 
