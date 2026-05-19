@@ -1,11 +1,14 @@
-import { computed, defineComponent, provide, ref, watch, type PropType } from 'vue'
+import { computed, defineComponent, provide, watch, type PropType } from 'vue'
 import { AUTH_PROTECTED_KEY } from './key.js'
 import { useAuth } from './useAuth.js'
+import { useAuthClient } from './useAuthClient.js'
 
-// Publiczny tryb props — taki sam jak w React.
+// Publiczny tryb props.
 export type AuthBoundaryPublicMode = 'protected' | 'guest'
 
-// API symetryczne do React AuthBoundary. Patrz tamtejszy plik dla pełnej dokumentacji.
+// Konsument NIE pisze żadnych callbacków. Paczka decyduje sama gdzie redirectować
+// na podstawie konfiguracji loginPath/homePath/forbiddenPath w createAuthClient.
+// Patrz: React AuthBoundary dla pełnej dokumentacji.
 export const AuthBoundary = defineComponent({
   name: 'AuthBoundary',
   props: {
@@ -21,29 +24,17 @@ export const AuthBoundary = defineComponent({
       type: Array as PropType<string[]>,
       default: undefined,
     },
-    onUnauthorized: {
-      type: Function as PropType<() => void>,
-      default: undefined,
-    },
-    onForbidden: {
-      type: Function as PropType<() => void>,
-      default: undefined,
-    },
-    onAuthenticated: {
-      type: Function as PropType<() => void>,
-      default: undefined,
-    },
   },
   setup(props, { slots }) {
-    // Guest bez callbacka onAuthenticated = nie sprawdzamy /me. Z callbackiem = sprawdzamy.
-    const contextMode =
-      props.mode === 'guest'
-        ? props.onAuthenticated
-          ? 'guest-checking'
-          : 'guest-passive'
-        : 'protected'
-    provide(AUTH_PROTECTED_KEY, contextMode)
-    const { user, isLoading, error } = useAuth()
+    provide(AUTH_PROTECTED_KEY, props.mode === 'guest' ? 'guest-checking' : 'protected')
+
+    const client = useAuthClient()
+    const { user, isLoading } = useAuth()
+
+    const config = client.config
+    const loginPath = config.loginPath
+    const homePath = config.homePath ?? '/'
+    const forbiddenPath = config.forbiddenPath ?? loginPath
 
     const hasRequiredRoles = computed(() => {
       if (props.mode !== 'protected') return true
@@ -58,39 +49,24 @@ export const AuthBoundary = defineComponent({
       return true
     })
 
-    // Guard: nie wołaj tego samego callbacku dwa razy z rzędu dla tego samego stanu.
-    // Bez tego logout/refresh-fail wpadłby w pętlę (redirect → remount → ...).
-    const lastFired = ref<'unauthorized' | 'forbidden' | 'authenticated' | null>(null)
-
     watch(
-      [isLoading, user, error, hasRequiredRoles],
-      ([loading, u, err, hasRoles]) => {
+      [isLoading, user, hasRequiredRoles],
+      ([loading, u, hasRoles]) => {
         if (loading) return
         if (props.mode === 'protected') {
           if (!u) {
-            if (lastFired.value !== 'unauthorized') {
-              lastFired.value = 'unauthorized'
-              props.onUnauthorized?.()
-            }
+            if (loginPath) client.redirectTo(loginPath)
             return
           }
           if (!hasRoles) {
-            if (lastFired.value !== 'forbidden') {
-              lastFired.value = 'forbidden'
-              ;(props.onForbidden ?? props.onUnauthorized)?.()
-            }
+            if (forbiddenPath) client.redirectTo(forbiddenPath)
             return
           }
-          lastFired.value = null
           return
         }
-        if (props.mode === 'guest') {
-          if (u && lastFired.value !== 'authenticated') {
-            lastFired.value = 'authenticated'
-            props.onAuthenticated?.()
-          } else if (!u) {
-            lastFired.value = null
-          }
+        // mode === 'guest'
+        if (u) {
+          client.redirectTo(homePath)
         }
       },
       { immediate: true },

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { AuthProtectedContext } from './context.js'
 import { useAuth } from './useAuth.js'
+import { useAuthClient } from './useAuthClient.js'
 
 export type AuthBoundaryMode = 'protected' | 'guest'
 
@@ -8,48 +9,29 @@ export type AuthBoundaryProps = {
   children: ReactNode
 
   // Tryb sesji:
-  //  - "protected" (default): wymaga zalogowanego usera. /me jest wołane, polling działa.
-  //  - "guest":               wymaga NIEzalogowanego usera (strony publiczne typu /login).
-  //                           /me jest wołane raz (bez pollingu) żeby wiedzieć czy user już ma sesję.
+  //  - "protected" (default): wymaga zalogowanego usera. Paczka strzela /me, polluje
+  //    co 30s, odświeża po focusie. Brak sesji → redirect na loginPath (z configu).
+  //  - "guest": strona publiczna (np. /login). Paczka sprawdza /me raz; jeśli user
+  //    jest zalogowany → redirect na homePath. Niezalogowany → renderuje children.
   mode?: AuthBoundaryMode
 
-  // Renderowane gdy: ładujemy /me LUB warunki dostępu niespełnione (przed wywołaniem callbacku).
+  // Renderowane podczas pierwszego /me lub gdy warunki dostępu jeszcze się rozstrzygają.
   // Typowo <Spinner/> albo skeleton. Default: null.
   fallback?: ReactNode
 
-  // Kontrola dostępu po rolach — tylko w trybie "protected".
-  // Mutually exclusive — używaj jednego z dwóch:
-  //   requireRoles: user musi mieć WSZYSTKIE wymienione (AND).
-  //   requireAnyRole: user musi mieć PRZYNAJMNIEJ JEDNĄ (OR).
-  requireRoles?: string[]
-  requireAnyRole?: string[]
-
-  // Tryb "protected": user się nie zalogował / sesja wygasła.
-  onUnauthorized?: () => void
-
-  // Tryb "protected": user zalogowany, ale brak wymaganych ról.
-  // Jeśli nie podano, paczka woła onUnauthorized jako fallback.
-  onForbidden?: () => void
-
-  // Tryb "guest": user JEST zalogowany (typowo redirect z /login na /).
-  onAuthenticated?: () => void
+  // Wymagane role (tylko mode="protected"). Brak ról → redirect na forbiddenPath
+  // (z configu klienta, default = loginPath).
+  // Mutually exclusive — używaj jednej z dwóch:
+  requireRoles?: string[] // user musi mieć WSZYSTKIE (AND)
+  requireAnyRole?: string[] // user musi mieć PRZYNAJMNIEJ JEDNĄ (OR)
 }
 
-// Wszystko wewnątrz <AuthBoundary> ma "tryb chroniony" (lub "guest") — useAuth() w tym
-// poddrzewie woła /me. Polling tylko w trybie "protected".
-//
-// W trybie "guest" wołanie /me jest opt-in przez podanie onAuthenticated:
-//   <AuthBoundary mode="guest">…</AuthBoundary>
-//     → NIE strzela /me. Zakładamy że user jest niezalogowany, renderujemy children.
-//   <AuthBoundary mode="guest" onAuthenticated={() => nav('/')}>…</AuthBoundary>
-//     → Strzela /me raz. Jeśli user jest zalogowany → onAuthenticated → callback.
+// Konsument NIE pisze żadnych callbacków. Paczka decyduje sama gdzie redirectować
+// na podstawie konfiguracji loginPath/homePath/forbiddenPath w createAuthClient.
 export function AuthBoundary(props: AuthBoundaryProps) {
   const mode = props.mode ?? 'protected'
-  // Guest bez callbacka = nie sprawdzamy sesji. Guest z callbackiem = sprawdzamy.
-  const contextMode =
-    mode === 'guest' ? (props.onAuthenticated ? 'guest-checking' : 'guest-passive') : 'protected'
   return (
-    <AuthProtectedContext.Provider value={contextMode}>
+    <AuthProtectedContext.Provider value={mode === 'guest' ? 'guest-checking' : 'protected'}>
       <AuthBoundaryInner {...props} />
     </AuthProtectedContext.Provider>
   )
@@ -61,13 +43,16 @@ function AuthBoundaryInner({
   fallback = null,
   requireRoles,
   requireAnyRole,
-  onUnauthorized,
-  onForbidden,
-  onAuthenticated,
 }: AuthBoundaryProps) {
-  const { user, isLoading, error } = useAuth()
+  const client = useAuthClient()
+  const { user, isLoading } = useAuth()
 
-  // Sprawdzenie ról. Tylko sensowne gdy mamy usera i mode=protected.
+  const config = client.config
+  const loginPath = config.loginPath
+  const homePath = config.homePath ?? '/'
+  const forbiddenPath = config.forbiddenPath ?? loginPath
+
+  // Czy user ma wymagane role (jeśli boundary tego wymaga).
   const hasRequiredRoles = useMemo(() => {
     if (mode !== 'protected') return true
     if (!user) return false
@@ -81,52 +66,33 @@ function AuthBoundaryInner({
     return true
   }, [mode, user, requireRoles, requireAnyRole])
 
-  // KLUCZOWE: callbacks są w refs, NIE w deps useEffect.
-  // Bez tego każdy nowy callback (inline arrow w propsie konsumenta) re-triggerował
-  // effect i robił nieskończoną pętlę redirect→remount→redirect.
-  const cbRefs = useRef({ onUnauthorized, onForbidden, onAuthenticated })
-  cbRefs.current = { onUnauthorized, onForbidden, onAuthenticated }
-
-  // Drugi guard: NIE wołaj tego samego callbacku dwa razy z rzędu dla tego samego stanu.
-  // Bez tego: focus okna → useMe refetch → 401 → SessionExpiredError → effect → onUnauthorized
-  // → navigate → re-mount → znowu cały cykl.
-  const lastFired = useRef<'unauthorized' | 'forbidden' | 'authenticated' | null>(null)
-
+  // Redirecty są **side-effectami** boundary. Każdy redirect uruchamia się tylko raz
+  // dzięki pathname guard w `client.redirect` (paczka sama wewnętrznie sprawdza).
+  // Wykonanie w useEffect: nie blokujemy renderu, nie odpalamy podczas SSR (window nie istnieje).
   useEffect(() => {
     if (isLoading) return
 
     if (mode === 'protected') {
       if (!user) {
-        // Brak sesji po zakończonym ładowaniu — fire raz. Ref guard chroni przed
-        // pętlą gdy callback navigation triggeruje re-mount.
-        if (lastFired.current !== 'unauthorized') {
-          lastFired.current = 'unauthorized'
-          cbRefs.current.onUnauthorized?.()
-        }
+        // Brak sesji — paczka idzie na loginPath. Jeśli config nie ma loginPath,
+        // konsument MUSI obsłużyć sytuację sam (np. przez własny redirect w fallback).
+        if (loginPath) client.redirectTo(loginPath)
         return
       }
-      // Sesja jest.
       if (!hasRequiredRoles) {
-        if (lastFired.current !== 'forbidden') {
-          lastFired.current = 'forbidden'
-          ;(cbRefs.current.onForbidden ?? cbRefs.current.onUnauthorized)?.()
-        }
+        if (forbiddenPath) client.redirectTo(forbiddenPath)
         return
       }
-      // Sesja + role OK — reset guarda (przy następnym wylogowaniu effect zadziała).
-      lastFired.current = null
+      // user + role OK — nic nie robimy, renderujemy children.
       return
     }
 
-    if (mode === 'guest') {
-      if (user && lastFired.current !== 'authenticated') {
-        lastFired.current = 'authenticated'
-        cbRefs.current.onAuthenticated?.()
-      } else if (!user) {
-        lastFired.current = null
-      }
+    // mode === 'guest'
+    if (user) {
+      // Zalogowany na publicznej stronie → home.
+      client.redirectTo(homePath)
     }
-  }, [isLoading, user, error, mode, hasRequiredRoles])
+  }, [isLoading, user, hasRequiredRoles, mode, loginPath, homePath, forbiddenPath, client])
 
   if (isLoading) return <>{fallback}</>
 

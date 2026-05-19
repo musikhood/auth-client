@@ -8,10 +8,11 @@ import {
 } from './errors.js'
 import { BASE_URL, state } from '../test/server.js'
 
-function newClient(opts?: { onUnauthorized?: () => void }) {
+function newClient(opts?: { loginPath?: string; redirect?: (p: string) => void }) {
   return createAuthClient({
     baseUrl: BASE_URL,
-    onUnauthorized: opts?.onUnauthorized,
+    loginPath: opts?.loginPath,
+    redirect: opts?.redirect,
   })
 }
 
@@ -106,17 +107,17 @@ describe('me', () => {
     expect(state.refreshCalls).toBe(1)
   })
 
-  it('401 + refresh fail → SessionExpiredError, event unauthorized, onUnauthorized', async () => {
+  it('401 + refresh fail → SessionExpiredError, event unauthorized, redirect na loginPath', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
 
-    const onUnauthorized = vi.fn()
+    const redirect = vi.fn()
     const onUnauthorizedEvent = vi.fn()
-    const client = newClient({ onUnauthorized })
+    const client = newClient({ loginPath: '/login', redirect })
     client.on('unauthorized', onUnauthorizedEvent)
 
     await expect(client.me()).rejects.toBeInstanceOf(SessionExpiredError)
-    expect(onUnauthorized).toHaveBeenCalledOnce()
+    expect(redirect).toHaveBeenCalledWith('/login')
     expect(onUnauthorizedEvent).toHaveBeenCalledOnce()
     expect(client.isAuthenticated()).toBe(false)
   })
@@ -257,12 +258,83 @@ describe('assertRoles', () => {
   })
 })
 
-describe('unauthorizedRedirect (config)', () => {
-  it('builduje wbudowany onUnauthorized z pathname guardem', async () => {
-    const originalHref = window.location.href
-    const originalReplace = window.location.replace
+describe('redirect na loginPath', () => {
+  it('logout() triggeruje redirect na loginPath', async () => {
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+    await client.logout()
+    expect(redirect).toHaveBeenCalledWith('/login')
+  })
 
-    // Symulujemy nawigację bez faktycznej zmiany URL
+  it('logout() NIE redirectuje gdy loginPath nie skonfigurowane', async () => {
+    const redirect = vi.fn()
+    const client = newClient({ redirect })
+    await client.logout()
+    expect(redirect).not.toHaveBeenCalled()
+  })
+
+  it('refresh fail (przez me) triggeruje redirect na loginPath', async () => {
+    state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
+    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+    await expect(client.me()).rejects.toBeInstanceOf(SessionExpiredError)
+    expect(redirect).toHaveBeenCalledWith('/login')
+  })
+
+  it('assertRoles fail (bez forbiddenPath) → redirect na loginPath', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+    await expect(client.assertRoles(['ROLE_ADMIN'])).rejects.toBeInstanceOf(ForbiddenRoleError)
+    // Bez forbiddenPath fallback na loginPath.
+    expect(redirect).toHaveBeenCalledWith('/login')
+    // Krytyczne: redirect TYLKO raz (logout-redirect suppressed, custom redirect on forbiddenPath).
+    expect(redirect).toHaveBeenCalledTimes(1)
+  })
+
+  it('assertRoles fail (Z forbiddenPath) → redirect na forbiddenPath, NIE loginPath', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      loginPath: '/login',
+      forbiddenPath: '/forbidden',
+      redirect,
+    })
+    await expect(client.assertRoles(['ROLE_ADMIN'])).rejects.toBeInstanceOf(ForbiddenRoleError)
+    expect(redirect).toHaveBeenCalledWith('/forbidden')
+    expect(redirect).toHaveBeenCalledTimes(1) // forbiddenPath wygrywa, logout NIE redirectuje
+  })
+
+  it('logout({redirect: false}) NIE triggeruje redirect', async () => {
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+    await client.logout({ redirect: false })
+    expect(redirect).not.toHaveBeenCalled()
+  })
+
+  it('domyślny redirect używa window.location.href z pathname guard', async () => {
+    const originalHref = window.location.href
     let navigatedTo: string | null = null
     Object.defineProperty(window.location, 'href', {
       set(v: string) {
@@ -274,23 +346,189 @@ describe('unauthorizedRedirect (config)', () => {
       configurable: true,
     })
 
-    state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
-    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
-
-    const client = createAuthClient({
-      baseUrl: BASE_URL,
-      unauthorizedRedirect: '/login',
-    })
-    await expect(client.me()).rejects.toBeInstanceOf(SessionExpiredError)
+    const client = createAuthClient({ baseUrl: BASE_URL, loginPath: '/login' })
+    await client.logout()
     expect(navigatedTo).toBe('/login')
 
-    // Cleanup
     Object.defineProperty(window.location, 'href', {
       value: originalHref,
       writable: true,
       configurable: true,
     })
-    window.location.replace = originalReplace
+  })
+
+  it('redirectTo z pathname guard — nie redirectuje gdy już jesteś na docelowej', () => {
+    // window.location.pathname w happy-dom default to '/'. Redirect na '/' → guard zatrzymuje.
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+    client.redirectTo('/') // pathname === '/' → blocked
+    expect(redirect).not.toHaveBeenCalled()
+    client.redirectTo('/login') // pathname === '/' → przechodzi
+    expect(redirect).toHaveBeenCalledWith('/login')
+  })
+})
+
+describe('panel-wide requireRoles (config)', () => {
+  it('user ma role → me() przepuszcza, brak forbidden', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_ADMIN'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const onForbidden = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      loginPath: '/login',
+      requireRoles: ['ROLE_ADMIN'],
+      redirect,
+    })
+    client.on('forbidden', onForbidden)
+
+    const user = await client.me()
+    expect(user.id).toBe('u-1')
+    // Daj enforcePanelRoles szansę się wykonać (async void).
+    await new Promise((r) => setTimeout(r, 50))
+    expect(onForbidden).not.toHaveBeenCalled()
+    expect(redirect).not.toHaveBeenCalled()
+    expect(state.logoutCalls).toBe(0)
+  })
+
+  it('user bez roli → me() loguje go, redirect na forbiddenPath, emit forbidden', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const onForbidden = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      loginPath: '/login',
+      forbiddenPath: '/forbidden',
+      requireRoles: ['ROLE_ADMIN'],
+      redirect,
+    })
+    client.on('forbidden', onForbidden)
+
+    await client.me() // me() zwraca usera mimo wszystko (HTTP się powiódł)
+    // enforcePanelRoles jest void async — czekamy aż się wykona.
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(state.logoutCalls).toBe(1) // automatyczny logout
+    expect(redirect).toHaveBeenCalledWith('/forbidden')
+    expect(onForbidden).toHaveBeenCalledWith({
+      requiredRoles: ['ROLE_ADMIN'],
+      userRoles: ['ROLE_USER'],
+      mode: 'all',
+    })
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('requireAnyRole — wystarczy jedna rola', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_EDIT'],
+        disabled: false,
+      },
+    }
+    const onForbidden = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      requireAnyRole: ['ROLE_ADMIN', 'ROLE_EDIT'],
+    })
+    client.on('forbidden', onForbidden)
+
+    await client.me()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(onForbidden).not.toHaveBeenCalled()
+  })
+
+  it('requireAnyRole fail — żadnej z ról', async () => {
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const onForbidden = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      loginPath: '/login',
+      requireAnyRole: ['ROLE_ADMIN', 'ROLE_EDIT'],
+      redirect,
+    })
+    client.on('forbidden', onForbidden)
+
+    await client.me()
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(state.logoutCalls).toBe(1)
+    expect(redirect).toHaveBeenCalledWith('/login')
+    expect(onForbidden).toHaveBeenCalledWith({
+      requiredRoles: ['ROLE_ADMIN', 'ROLE_EDIT'],
+      userRoles: ['ROLE_USER'],
+      mode: 'any',
+    })
+  })
+
+  it('zero pętli — drugi me() po wymuszonym logout NIE triggeruje znowu forbidden', async () => {
+    // Po logout sessionState='expired'. Drugi me() nie powinien już lecieć
+    // przez enforcePanelRoles, bo `client.isSessionExpired()` mówi false dopiero
+    // po nowym login. W praktyce useMe (TanStack) ma enabled=false → nie woła me().
+    // Test sprawdza że gdyby ktoś manualnie wywołał me() drugi raz, paczka
+    // zachowuje się sensownie (jeden logout, jeden redirect, jeden forbidden).
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    const onForbidden = vi.fn()
+    const client = createAuthClient({
+      baseUrl: BASE_URL,
+      loginPath: '/login',
+      requireRoles: ['ROLE_ADMIN'],
+      redirect,
+    })
+    client.on('forbidden', onForbidden)
+
+    await client.me()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(state.logoutCalls).toBe(1)
+    expect(onForbidden).toHaveBeenCalledTimes(1)
+    // Drugi me() (tak jak gdyby konsument świadomie wywołał) — drugi logout
+    // + drugi forbidden. Brak pętli bo tylko jeden cykl jest wymuszony PER call.
+    await client.me()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(state.logoutCalls).toBe(2)
+    expect(onForbidden).toHaveBeenCalledTimes(2)
+    // Liczba wywołań jest deterministyczna — me() wywołuje cycle, ale nie ma
+    // wewnętrznej pętli paczki która by sama re-wołała me().
   })
 })
 

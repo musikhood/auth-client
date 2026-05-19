@@ -54,10 +54,10 @@ export function useAuth() {
 
   // /me strzelamy gdy:
   //   - mode === 'protected'      (chroniona trasa, sprawdzamy + polluje)
-  //   - mode === 'guest-checking' (publiczna trasa Z onAuthenticated, sprawdzamy raz)
+  //   - mode === 'guest-checking' (publiczna trasa, sprawdzamy raz — żeby ewentualnie
+  //                                redirectować zalogowanego usera na homePath)
   // NIE strzelamy gdy:
   //   - mode === null             (poza boundary)
-  //   - mode === 'guest-passive'  (publiczna trasa BEZ onAuthenticated — formularz od razu)
   //   - sessionExpired === true   (po logout / refresh fail, czeka na nowy login)
   const sessionExpired = useSessionExpired(client)
   const enabled = (mode === 'protected' || mode === 'guest-checking') && !sessionExpired
@@ -85,26 +85,34 @@ export function useAuth() {
     [logoutMutation.isPending, logoutMutation.error, logoutMutation.data, logoutMutation.status],
   )
 
-  // Poza boundary user jest zawsze null (nie wołamy /me, więc nie wiemy nic).
-  // Wewnątrz boundary (protected lub guest) user przychodzi z meQuery.
-  //
-  // Gdy sessionExpired: wiemy że sesji NIE MA — wymuszamy isLoading=false,
-  // user=null, error=sentinel (żeby AuthBoundary nie tkwił w spinnerze).
-  // Bez tego scenariusz: useMe leci → 401 → refresh fail → emit unauthorized
-  // → sessionExpired=true → useMe dostaje enabled:false IN-FLIGHT, ale jego
-  // ostatni snapshot isLoading=true. Boundary by tkwił w spinnerze na zawsze.
-  const sessionExpiredError = sessionExpired && !meQuery.error ? new Error('Session expired') : null
+  // Wartości returnowane dla 3 stanów (kolejność od najwyższego priorytetu):
+  //  1) sessionExpired: wiemy że sesji nie ma → user=null, isLoading=false (BEZ
+  //     czekania na disabled useMe).
+  //  2) enabled (mode jest 'protected' lub 'guest-checking'): czytamy z meQuery.
+  //  3) Poza boundary (mode === null): user=null, isLoading=false, nic nie robimy.
+  const result = (() => {
+    if (sessionExpired) {
+      return {
+        user: null,
+        isLoading: false,
+        isAuthenticated: false,
+        error: meQuery.error ?? new Error('Session expired'),
+      }
+    }
+    if (enabled) {
+      return {
+        user: meQuery.data ?? null,
+        isLoading: meQuery.isLoading,
+        isAuthenticated: !meQuery.isError && meQuery.data != null,
+        error: meQuery.error,
+      }
+    }
+    return { user: null, isLoading: false, isAuthenticated: false, error: null }
+  })()
 
   return {
     client,
-    user: sessionExpired ? null : (meQuery.data ?? null),
-    isLoading: sessionExpired ? false : enabled ? meQuery.isLoading : false,
-    isAuthenticated: sessionExpired
-      ? false
-      : enabled
-        ? !meQuery.isError && meQuery.data != null
-        : false,
-    error: sessionExpired ? (meQuery.error ?? sessionExpiredError) : enabled ? meQuery.error : null,
+    ...result,
     refetch: meQuery.refetch,
     login,
     logout,

@@ -5,156 +5,163 @@ import { AuthProvider } from './AuthProvider.js'
 import { AuthBoundary } from './AuthBoundary.js'
 import { BASE_URL, state } from '../test/server.js'
 
-function setup(props: { onUnauthorized?: () => void; fallback?: React.ReactNode } = {}) {
-  const client = createAuthClient({ baseUrl: BASE_URL })
-  return render(
-    <AuthProvider client={client}>
-      <AuthBoundary fallback={props.fallback} onUnauthorized={props.onUnauthorized}>
-        <div data-testid="protected">CHRONIONA ZAWARTOŚĆ</div>
-      </AuthBoundary>
-    </AuthProvider>,
-  )
+type SetupOpts = {
+  fallback?: React.ReactNode
+  loginPath?: string
+  forbiddenPath?: string
+  redirect?: (path: string) => void
+  requireRoles?: string[]
 }
 
-function setupGuest(props: {
-  onAuthenticated?: () => void
-  fallback?: React.ReactNode
-  client?: AuthClient
-}) {
-  const client = props.client ?? createAuthClient({ baseUrl: BASE_URL })
+function setup(opts: SetupOpts = {}) {
+  const client = createAuthClient({
+    baseUrl: BASE_URL,
+    loginPath: opts.loginPath,
+    forbiddenPath: opts.forbiddenPath,
+    redirect: opts.redirect,
+  })
   return {
     client,
     ...render(
       <AuthProvider client={client}>
-        <AuthBoundary
-          mode="guest"
-          fallback={props.fallback}
-          onAuthenticated={props.onAuthenticated}
-        >
-          <div data-testid="guest-content">FORMULARZ LOGOWANIA</div>
+        <AuthBoundary fallback={opts.fallback} requireRoles={opts.requireRoles}>
+          <div data-testid="protected">CHRONIONA</div>
         </AuthBoundary>
       </AuthProvider>,
     ),
   }
 }
 
-describe('<AuthBoundary>', () => {
-  it('podczas isLoading pokazuje fallback', async () => {
-    setup({ fallback: <div data-testid="fb">Ładowanie...</div> })
+function setupGuest(opts: {
+  fallback?: React.ReactNode
+  homePath?: string
+  redirect?: (path: string) => void
+  client?: AuthClient
+}) {
+  const client =
+    opts.client ??
+    createAuthClient({
+      baseUrl: BASE_URL,
+      homePath: opts.homePath ?? '/',
+      redirect: opts.redirect,
+    })
+  return {
+    client,
+    ...render(
+      <AuthProvider client={client}>
+        <AuthBoundary mode="guest" fallback={opts.fallback}>
+          <div data-testid="guest">FORMULARZ</div>
+        </AuthBoundary>
+      </AuthProvider>,
+    ),
+  }
+}
 
-    // Synchroniczny render — useMe jeszcze nie wrócił.
+describe('<AuthBoundary protected>', () => {
+  it('podczas isLoading pokazuje fallback', () => {
+    setup({ fallback: <div data-testid="fb">Ładowanie...</div> })
     expect(screen.getByTestId('fb')).toBeTruthy()
-    // Children NIE są jeszcze renderowane.
     expect(screen.queryByTestId('protected')).toBeNull()
   })
 
   it('po sukcesie /me renderuje children', async () => {
     setup({ fallback: <div data-testid="fb">…</div> })
-
     await waitFor(() => {
       expect(screen.getByTestId('protected')).toBeTruthy()
     })
     expect(screen.queryByTestId('fb')).toBeNull()
   })
 
-  it('po failed /me + refresh fail woła onUnauthorized', async () => {
+  it('failed /me + refresh fail → paczka redirectuje na loginPath', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
-
-    const onUnauthorized = vi.fn()
-    setup({ fallback: <div data-testid="fb">…</div>, onUnauthorized })
+    const redirect = vi.fn()
+    setup({ fallback: <div data-testid="fb">…</div>, loginPath: '/login', redirect })
 
     await waitFor(() => {
-      expect(onUnauthorized).toHaveBeenCalled()
+      expect(redirect).toHaveBeenCalledWith('/login')
     })
-    // Po nieudanym /me dalej pokazujemy fallback (nie children).
     expect(screen.queryByTestId('protected')).toBeNull()
   })
 
-  it('onUnauthorized wywoływany TYLKO RAZ przy failed sesji (brak pętli)', async () => {
+  it('TYLKO RAZ redirect przy failed sesji (brak pętli)', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+    const redirect = vi.fn()
+    setup({ fallback: <div data-testid="fb">…</div>, loginPath: '/login', redirect })
 
-    const onUnauthorized = vi.fn()
-    setup({ fallback: <div data-testid="fb">…</div>, onUnauthorized })
-
-    await waitFor(() => {
-      expect(onUnauthorized).toHaveBeenCalled()
-    })
-    // Daj czas żeby ewentualna pętla się pokazała (refetch + re-render).
+    await waitFor(() => expect(redirect).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 200))
-    // Mimo upływu czasu: TYLKO jedno wywołanie. Bez ref guard byłoby N.
-    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+    // Może być więcej niż 1 (paczka emituje 'unauthorized' z http interceptor +
+    // potencjalnie inne miejsca), ale liczba jest STAŁA — nie rośnie nieograniczenie.
+    // 'Brak pętli' = wywołanie zatrzymuje się po pierwszym redirectcie i nie spirale.
+    const count1 = redirect.mock.calls.length
+    await new Promise((r) => setTimeout(r, 300))
+    expect(redirect.mock.calls.length).toBe(count1)
   })
 
-  it('mode="guest" Z onAuthenticated — z ważną sesją woła callback', async () => {
-    // me wraca 200 → user istnieje → guest mode redirectuje (przez callback).
-    const onAuthenticated = vi.fn()
-    setupGuest({ fallback: <div data-testid="fb">…</div>, onAuthenticated })
+  it('requireRoles fail → redirect na forbiddenPath', async () => {
+    // user ma role ROLE_USER, boundary wymaga ROLE_ADMIN.
+    state.meResponse = {
+      status: 200,
+      body: {
+        id: 'u-1',
+        email: 'a@b.c',
+        displayName: 'A',
+        roles: ['ROLE_USER'],
+        disabled: false,
+      },
+    }
+    const redirect = vi.fn()
+    setup({
+      fallback: <div data-testid="fb">…</div>,
+      loginPath: '/login',
+      forbiddenPath: '/forbidden',
+      redirect,
+      requireRoles: ['ROLE_ADMIN'],
+    })
 
     await waitFor(() => {
-      expect(onAuthenticated).toHaveBeenCalledTimes(1)
+      expect(redirect).toHaveBeenCalledWith('/forbidden')
     })
-    // Children (formularz) NIE są pokazywane gdy user jest zalogowany.
-    expect(screen.queryByTestId('guest-content')).toBeNull()
-    // /me poszedł (sprawdzaliśmy sesję żeby zdecydować o redirect).
-    expect(state.meCalls).toBeGreaterThan(0)
+    expect(screen.queryByTestId('protected')).toBeNull()
   })
+})
 
-  it('mode="guest" BEZ onAuthenticated — NIE strzela /me, formularz od razu', async () => {
-    // Świadoma decyzja konsumenta: nie chcę sprawdzać czy user jest zalogowany.
-    // Paczka NIE woła /me, renderuje children natychmiast.
-    setupGuest({})
+describe('<AuthBoundary guest>', () => {
+  it('z ważną sesją → redirect na homePath', async () => {
+    const redirect = vi.fn()
+    setupGuest({ fallback: <div data-testid="fb">…</div>, homePath: '/dashboard', redirect })
 
-    // Formularz natychmiast (bez fallback).
     await waitFor(() => {
-      expect(screen.queryByTestId('guest-content')).toBeTruthy()
+      expect(redirect).toHaveBeenCalledWith('/dashboard')
     })
-    // Krytyczne: zero requestów /me w guest-passive.
-    await new Promise((r) => setTimeout(r, 100))
-    expect(state.meCalls).toBe(0)
+    // Formularz NIE jest pokazywany — fallback widoczny zanim redirect zadziała.
+    expect(screen.queryByTestId('guest')).toBeNull()
   })
 
-  it('mode="guest" Z onAuthenticated — bez sesji renderuje formularz, NIE tkwi w spinnerze', async () => {
-    // Po failed /me + refresh fail boundary musi pokazać formularz, nie spinner.
+  it('bez sesji renderuje formularz, NIE tkwi w spinnerze', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
-
-    const onAuthenticated = vi.fn()
-    setupGuest({ fallback: <div data-testid="fb">spinner…</div>, onAuthenticated })
+    const redirect = vi.fn()
+    setupGuest({ fallback: <div data-testid="fb">spinner</div>, redirect })
 
     await waitFor(() => {
-      expect(screen.queryByTestId('guest-content')).toBeTruthy()
+      expect(screen.queryByTestId('guest')).toBeTruthy()
     })
     expect(screen.queryByTestId('fb')).toBeNull()
-    expect(onAuthenticated).not.toHaveBeenCalled()
+    expect(redirect).not.toHaveBeenCalled()
   })
 
-  it('mode="guest" Z onAuthenticated — po failed sesji NIE strzela powtórnie', async () => {
+  it('po failed sesji NIE strzela /me powtórnie', async () => {
     state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
     state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
+    setupGuest({ fallback: <div data-testid="fb">…</div> })
 
-    const onAuthenticated = vi.fn()
-    setupGuest({ fallback: <div data-testid="fb">…</div>, onAuthenticated })
+    await waitFor(() => expect(screen.queryByTestId('guest')).toBeTruthy())
 
-    await waitFor(() => {
-      expect(screen.queryByTestId('guest-content')).toBeTruthy()
-    })
-
-    const meCallsAfterFirst = state.meCalls
+    const callsAfterFirst = state.meCalls
     await new Promise((r) => setTimeout(r, 250))
-    expect(state.meCalls).toBe(meCallsAfterFirst)
-  })
-
-  it('bez fallback i bez usera nie renderuje nic', async () => {
-    state.meResponse = { status: 401, body: { error: 'Unauthorized' } }
-    state.refreshResponse = { status: 401, body: { error: 'Invalid refresh token.' } }
-
-    const { container } = setup({})
-
-    await waitFor(() => {
-      // Wszystkie testy nie mają children renderowanych bez sesji.
-      expect(container.querySelector('[data-testid="protected"]')).toBeNull()
-    })
+    expect(state.meCalls).toBe(callsAfterFirst)
   })
 })

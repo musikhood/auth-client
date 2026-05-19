@@ -49,8 +49,7 @@ export function useAuth() {
     offUnauthorized()
   })
 
-  // /me strzelamy w 'protected' oraz 'guest-checking' (guest z onAuthenticated).
-  // 'guest-passive' i null = nie strzelamy.
+  // /me strzelamy w 'protected' oraz 'guest-checking'. null = nie strzelamy.
   const enabled = computed(
     () => (mode === 'protected' || mode === 'guest-checking') && !sessionExpired.value,
   )

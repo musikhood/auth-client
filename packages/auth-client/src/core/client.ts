@@ -33,7 +33,10 @@ export type AuthClient = {
   delete<T = unknown>(url: string, config?: RequestConfig): Promise<T>
 
   login(credentials: LoginCredentials): Promise<TokenResponse>
-  logout(): Promise<LogoutResponse>
+  // Domyślnie po logout paczka redirectuje na loginPath (jeśli skonfigurowane).
+  // `redirect: false` blokuje auto-redirect — przydatne gdy assertRoles chce
+  // ręcznie redirectować na forbiddenPath zamiast loginPath.
+  logout(options?: { redirect?: boolean }): Promise<LogoutResponse>
   me(): Promise<AuthUser>
   refresh(): Promise<TokenResponse>
 
@@ -53,6 +56,11 @@ export type AuthClient = {
   // Reset na false dopiero przy nowym login().
   isSessionExpired(): boolean
 
+  // Programatyczny redirect przez paczkę. Respektuje `config.redirect` override
+  // oraz wbudowany pathname guard (nie redirectuje gdy już jesteś na docelowej ścieżce).
+  // Adaptery (AuthBoundary) używają tego do redirectów na login/home/forbidden paths.
+  redirectTo(path: string): void
+
   on<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): () => void
   off<E extends AuthEventName>(event: E, handler: AuthEventListener<E>): void
 
@@ -67,28 +75,89 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
   const emitter = createAuthEmitter()
 
-  // Jeśli konsument podał `unauthorizedRedirect`, paczka sama robi redirect
-  // z wbudowanym pathname guardem (nie przeładuje gdy już jesteś na docelowej ścieżce).
-  // `onUnauthorized` callback ma pierwszeństwo dla advanced cases.
-  const resolvedOnUnauthorized: (() => void) | undefined =
-    config.onUnauthorized ??
-    (config.unauthorizedRedirect
-      ? () => {
-          if (typeof window === 'undefined') return
-          if (window.location.pathname === config.unauthorizedRedirect) return
-          window.location.href = config.unauthorizedRedirect!
-        }
-      : undefined)
+  // Funkcja redirect — używana przez paczkę gdy potrzebuje przekierować usera
+  // (na login, home, forbidden). Domyślnie `window.location.href`. Konsument może
+  // dostarczyć własną (np. integracja z routerem SPA).
+  // Wbudowany pathname guard: paczka nigdy nie redirectuje gdy już jesteś tutaj
+  // (zapobiega pętlom).
+  const userRedirect = config.redirect
+  const redirect = (path: string) => {
+    if (typeof window === 'undefined') return
+    if (window.location.pathname === path) return
+    if (userRedirect) {
+      userRedirect(path)
+    } else {
+      window.location.href = path
+    }
+  }
+
+  // Tylko loginPath jest używany w core (do redirectów przy unauthorized/logout
+  // z poziomu http interceptora i emittera). homePath/forbiddenPath są używane
+  // przez adaptery (AuthBoundary) — czytają je z config.* bezpośrednio.
+  const loginPath = config.loginPath
+
+  // Panel-wide role gate — opcjonalny.
+  // Validuje role usera po każdym /me. Brak ról → logout + redirect na
+  // forbiddenPath + emit 'forbidden' z payloadem.
+  const panelRoles = config.requireRoles ?? config.requireAnyRole
+  const panelRolesMode: 'all' | 'any' = config.requireRoles ? 'all' : 'any'
+
+  // Sprawdza role usera względem panel-wide guard. Zwraca true jeśli OK,
+  // false jeśli brak (i wywołuje cleanup + redirect + emit).
+  // Flaga zapobiega re-entry: cleanup woła logout() które wywołuje setUser(null)
+  // (nie me()), więc race condition tu nie ma — ale dla bezpieczeństwa.
+  let checkingRoles = false
+  const enforcePanelRoles = async (user: AuthUser): Promise<boolean> => {
+    if (!panelRoles || panelRoles.length === 0) return true
+    if (checkingRoles) return true
+    const userRoles = user.roles ?? []
+    const ok =
+      panelRolesMode === 'all'
+        ? panelRoles.every((r) => userRoles.includes(r))
+        : panelRoles.some((r) => userRoles.includes(r))
+    if (ok) return true
+
+    checkingRoles = true
+    try {
+      // Logout BEZ redirectu — chcemy sami trafić na forbiddenPath.
+      try {
+        await client.logout({ redirect: false })
+      } catch {
+        // ignorujemy, lokalny stan i tak wyzerowany przez setUser(null) w logout
+      }
+      emitter.emit('forbidden', {
+        requiredRoles: panelRoles,
+        userRoles,
+        mode: panelRolesMode,
+      })
+      const target = config.forbiddenPath ?? loginPath
+      if (target) redirect(target)
+    } finally {
+      checkingRoles = false
+    }
+    return false
+  }
 
   const http = createHttp({
     baseUrl: config.baseUrl,
     emitter,
-    onUnauthorized: resolvedOnUnauthorized,
+    onUnauthorized: loginPath ? () => redirect(loginPath) : undefined,
   })
 
+  // Redirect na loginPath przy:
+  //   - 'unauthorized' (refresh fail) — obsłużone przez http interceptor via onUnauthorized
+  //   - 'logout' (jawne wylogowanie + cross-tab logout)
+  // Flaga `suppressLogoutRedirect` pozwala wewnętrznym wywołaniom (assertRoles)
+  // pominąć auto-redirect i podstawić własny target.
+  let suppressLogoutRedirect = false
+  if (loginPath) {
+    emitter.on('logout', () => {
+      if (suppressLogoutRedirect) return
+      redirect(loginPath)
+    })
+  }
+
   // Cross-tab sync — opt-in. Listener tworzy nowy BroadcastChannel/storage listener.
-  // Konsument może odpiąć ręcznie przez `client._detachBroadcast?.()` (zarezerwowane
-  // dla testów). W praktyce żyje przez całą sesję.
   if (config.broadcastSession && typeof window !== 'undefined') {
     attachBroadcastSync(emitter)
   }
@@ -156,7 +225,9 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
       }
     },
 
-    async logout() {
+    async logout(options) {
+      const skipRedirect = options?.redirect === false
+      if (skipRedirect) suppressLogoutRedirect = true
       try {
         const res = await request<LogoutResponse>({
           method: 'POST',
@@ -174,6 +245,8 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
           throw new AuthError(err.message, err.response?.status, err)
         }
         throw err
+      } finally {
+        suppressLogoutRedirect = false
       }
     },
 
@@ -181,6 +254,17 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
       try {
         const user = await request<AuthUser>({ method: 'GET', url: ENDPOINTS.me })
         setUser(user)
+        // Panel-wide role gate — sprawdzamy zaraz po każdym /me.
+        // Jeśli user nie ma wymaganych ról, paczka go wylogowuje + redirectuje
+        // + emituje 'forbidden'. Mimo to ZWRACAMY usera — niech adaptery
+        // (useMe) zobaczą że request zakończył się sukcesem na poziomie HTTP.
+        // Nawigacja i tak nastąpi (window.location.href), więc UI nie zdąży
+        // wyrenderować chronionych części z tymi danymi.
+        if (panelRoles && panelRoles.length > 0) {
+          // Świadomie nie await-ujemy bez powodu — jeśli logout się robi,
+          // pochłaniamy go, ale me() musi się zakończyć szybko.
+          void enforcePanelRoles(user)
+        }
         return user
       } catch (err) {
         // Po nieudanym refresh interceptor już rzucił SessionExpiredError i wyemitował
@@ -207,7 +291,7 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
       } catch (err) {
         emitter.emit('unauthorized', undefined)
         emitter.emit('user-changed', null)
-        resolvedOnUnauthorized?.()
+        if (loginPath) redirect(loginPath)
         throw new SessionExpiredError('Session expired', err)
       }
     },
@@ -222,14 +306,17 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
           : roles.some((r) => userRoles.includes(r))
       if (ok) return user
 
-      // Brak ról — czyścimy sesję (cookies + cache), żeby konsument nie miał
-      // "pół-zalogowanego" stanu po którym jeszcze pozwolimy klikać.
+      // Brak ról — czyścimy sesję (cookies + cache) BEZ auto-redirect, bo chcemy
+      // sami wysłać usera na forbiddenPath (a domyślny logout redirect zaprowadziłby
+      // go na loginPath, co jest mylące — user JEST zalogowany, tylko brak roli).
       try {
-        await this.logout()
+        await this.logout({ redirect: false })
       } catch {
         // Nawet jeśli logout się wysypie (np. sieć), event 'logout' poszedł,
         // cachedUser wyzerowany — wystarczy do bezpieczeństwa.
       }
+      const target = config.forbiddenPath ?? loginPath
+      if (target) redirect(target)
       throw new ForbiddenRoleError(roles, userRoles, mode)
     },
 
@@ -243,6 +330,10 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
     isSessionExpired() {
       return sessionState === 'expired'
+    },
+
+    redirectTo(path: string) {
+      redirect(path)
     },
 
     on(event, handler) {

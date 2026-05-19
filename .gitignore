@@ -16,3 +16,6 @@ pnpm-debug.log*
 .vscode
 *.tsbuildinfo
 .claude/
+
+# tarballe z `npm pack` / `pnpm pack` — nie należą do repo
+*.tgz
