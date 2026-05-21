@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { AuthGate, useAuth } from '@musikhood-dev/auth-client/vue'
+import { AuthBoundary, useAuth } from '@musikhood-dev/auth-client/vue'
 
 const { user, login, logout } = useAuth()
 const username = ref('')
@@ -14,10 +14,12 @@ function submit() {
 <template>
   <main style="font-family: system-ui; padding: 24px">
     <h1>auth-client · Vue example</h1>
-    <AuthGate>
-      <template #loading>
-        <p>Ładowanie…</p>
-      </template>
+    <!--
+      AuthBoundary aktywuje tryb chroniony — paczka strzela /me i polluje.
+      Brak sesji → redirect na config.loginPath. Tu config nie ma loginPath,
+      więc zamiast redirectu renderujemy slot #fallback (formularz logowania).
+    -->
+    <AuthBoundary>
       <template #fallback>
         <form @submit.prevent="submit">
           <label>Login <input v-model="username" required /></label><br />
@@ -33,8 +35,8 @@ function submit() {
       <template #default>
         <p>Witaj, {{ user?.displayName ?? user?.email }}</p>
         <p>Role: {{ user?.roles.join(', ') || '(brak)' }}</p>
-        <button @click="logout.mutate()" :disabled="logout.isPending.value">Wyloguj</button>
+        <button :disabled="logout.isPending.value" @click="logout.mutate()">Wyloguj</button>
       </template>
-    </AuthGate>
+    </AuthBoundary>
   </main>
 </template>

@@ -5,6 +5,5 @@
 // i polluje, poza nim user jest null bez żadnych requestów.
 export { createAuth, type AuthPlugin } from './vue/plugin.js'
 export { AuthBoundary } from './vue/AuthBoundary.js'
-export { AuthGate, renderAuthGate } from './vue/AuthGate.js'
 export { useAuth } from './vue/useAuth.js'
 export { AUTH_CLIENT_KEY, ME_QUERY_KEY } from './vue/key.js'

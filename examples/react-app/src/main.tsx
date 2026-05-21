@@ -7,9 +7,6 @@ import { App } from './App.js'
 
 const authClient = createAuthClient({
   baseUrl: 'https://auth.example.com',
-  onUnauthorized: () => {
-    console.warn('Sesja wygasła — przekierowanie na login')
-  },
 })
 
 const queryClient = new QueryClient()

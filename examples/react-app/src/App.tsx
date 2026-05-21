@@ -1,13 +1,18 @@
 import { useState } from 'react'
-import { AuthGate, useAuth } from '@musikhood-dev/auth-client/react'
+import { AuthBoundary, useAuth } from '@musikhood-dev/auth-client/react'
 
 export function App() {
   return (
     <main style={{ fontFamily: 'system-ui', padding: 24 }}>
       <h1>auth-client · React example</h1>
-      <AuthGate fallback={<LoginPage />} loading={<p>Ładowanie…</p>}>
+      {/*
+        AuthBoundary aktywuje tryb chroniony — paczka strzela /me i polluje.
+        Brak sesji → redirect na config.loginPath. Tu config nie ma loginPath,
+        więc zamiast redirectu renderujemy <LoginPage/> jako fallback.
+      */}
+      <AuthBoundary fallback={<LoginPage />}>
         <Dashboard />
-      </AuthGate>
+      </AuthBoundary>
     </main>
   )
 }

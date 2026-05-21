@@ -18,14 +18,12 @@ npm i @tanstack/vue-query
 
 ```tsx
 import { createAuthClient } from '@musikhood-dev/auth-client'
-import { AuthProvider, useAuth, AuthGate } from '@musikhood-dev/auth-client/react'
+import { AuthProvider, useAuth, AuthBoundary } from '@musikhood-dev/auth-client/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const authClient = createAuthClient({
   baseUrl: 'https://auth.example.com',
-  onUnauthorized: () => {
-    window.location.href = '/login'
-  },
+  loginPath: '/login',
 })
 
 const queryClient = new QueryClient()
@@ -34,9 +32,9 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider client={authClient}>
-        <AuthGate fallback={<LoginPage />}>
+        <AuthBoundary fallback={<LoginPage />}>
           <ProtectedApp />
-        </AuthGate>
+        </AuthBoundary>
       </AuthProvider>
     </QueryClientProvider>
   )
@@ -71,17 +69,17 @@ app.mount('#app')
 
 ```vue
 <script setup lang="ts">
-import { useAuth, AuthGate } from '@musikhood-dev/auth-client/vue'
+import { useAuth, AuthBoundary } from '@musikhood-dev/auth-client/vue'
 const { login } = useAuth()
 </script>
 
 <template>
-  <AuthGate>
+  <AuthBoundary>
     <template #default>Witaj</template>
     <template #fallback>
       <button @click="login.mutate({ username: 'jan', password: 'tajne' })">Zaloguj</button>
     </template>
-  </AuthGate>
+  </AuthBoundary>
 </template>
 ```
 
@@ -90,8 +88,13 @@ const { login } = useAuth()
 ```ts
 createAuthClient({
   baseUrl: string,                       // wymagane
-  onUnauthorized?: () => void,           // wołane gdy refresh nie powiedzie się
-  fetch?: typeof fetch,                  // override do testów
+  loginPath?: string,                    // redirect tu przy wygaśnięciu sesji / logout
+  homePath?: string,                     // redirect tu dla zalogowanego usera na trasie guest
+  forbiddenPath?: string,                // redirect tu przy braku wymaganych ról
+  requireRoles?: string[],               // panel-wide role gate (AND)
+  requireAnyRole?: string[],             // panel-wide role gate (OR)
+  redirect?: (path: string) => void,     // override nawigacji (np. router SPA)
+  meRefetchInterval?: number | false,    // interwał pollingu /me (default 30000)
 })
 ```
 

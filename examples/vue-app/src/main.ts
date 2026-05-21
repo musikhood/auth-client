@@ -6,7 +6,6 @@ import App from './App.vue'
 
 const authClient = createAuthClient({
   baseUrl: 'https://auth.example.com',
-  onUnauthorized: () => console.warn('Sesja wygasła'),
 })
 
 const app = createApp(App)
