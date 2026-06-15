@@ -4,7 +4,7 @@ import { useAuthClient } from './useAuthClient.js'
 import { useMe } from './useMe.js'
 import { useLogin } from './useLogin.js'
 import { useLogout } from './useLogout.js'
-import { AUTH_PROTECTED_KEY } from './key.js'
+import { AUTH_PROTECTED_KEY, type AuthProtectedMode } from './key.js'
 import type { LoginCredentials, TokenResponse, LogoutResponse } from '../core/types.js'
 
 type CallableMutation<TData, TError, TVariables> = UseMutationReturnType<
@@ -29,10 +29,14 @@ function makeCallable<TData, TError, TVariables>(
 export type UseAuthLogin = CallableMutation<TokenResponse, Error, LoginCredentials>
 export type UseAuthLogout = CallableMutation<LogoutResponse, Error, void>
 
-export function useAuth() {
+// modeOverride: używane przez AuthBoundary, który zna swój tryb z propsa i NIE
+// może go odczytać z własnego inject() — w Vue provide() nie jest widoczne dla
+// inject() w tym samym setupie (tylko dla potomków). Konsumenci w slotach
+// boundary wołają useAuth() bez argumentu i czytają tryb przez inject normalnie.
+export function useAuth(modeOverride?: AuthProtectedMode) {
   const client = useAuthClient()
-  // null poza boundary, 'protected' / 'guest' wewnątrz.
-  const mode = inject(AUTH_PROTECTED_KEY, null)
+  // null poza boundary, 'protected' / 'guest-checking' wewnątrz.
+  const mode = modeOverride ?? inject(AUTH_PROTECTED_KEY, null)
 
   // Reactive flag — re-renderuje gdy session umiera/wraca.
   // Bez tego useMe pollowałby na ślepo po logout (pętla refetch → 401).

@@ -26,10 +26,15 @@ export const AuthBoundary = defineComponent({
     },
   },
   setup(props, { slots }) {
-    provide(AUTH_PROTECTED_KEY, props.mode === 'guest' ? 'guest-checking' : 'protected')
+    const boundaryMode = props.mode === 'guest' ? 'guest-checking' : 'protected'
+    // Provide dla POTOMKÓW (komponenty w slotach wołające useAuth()).
+    provide(AUTH_PROTECTED_KEY, boundaryMode)
 
     const client = useAuthClient()
-    const { user, isLoading } = useAuth()
+    // WAŻNE: przekazujemy tryb jawnie. inject() w tym samym setupie NIE widzi
+    // provide() powyżej (Vue: provide jest widoczne tylko dla potomków), więc bez
+    // tego boundary'owy useAuth dostawałby mode=null → /me nigdy by nie leciało.
+    const { user, isLoading } = useAuth(boundaryMode)
 
     const config = client.config
     const loginPath = config.loginPath
