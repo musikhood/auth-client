@@ -35,6 +35,21 @@ export class SessionExpiredError extends AuthError {
   }
 }
 
+// 403 z /me — sesja jest WAŻNA, ale user nie ma dostępu do TEGO panelu.
+// Stan terminalny: NIE robimy refresh, NIE czyścimy cookies, NIE emitujemy
+// unauthorized/logout, NIE broadcastujemy do innych zakładek. Te same ciasteczka
+// SSO zostają ważne na panelach, do których user MA dostęp. Konsument pokazuje
+// ekran "brak dostępu" / login bez zapętlania.
+//
+// Świadomie ODRĘBNY od SessionExpiredError (401 = martwa sesja → globalne
+// wylogowanie) — to dwa różne kontrakty.
+export class PanelAccessDeniedError extends AuthError {
+  override name = 'PanelAccessDeniedError'
+  constructor(message = 'No access to this panel', cause?: unknown) {
+    super(message, 403, cause)
+  }
+}
+
 // Rzucany przez client.assertRoles() gdy user nie ma wymaganych ról.
 // assertRoles() automatycznie wywołuje logout() PRZED rzuceniem — sesja jest
 // czyszczona zanim konsument zobaczy ten błąd.

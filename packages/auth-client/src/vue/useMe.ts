@@ -8,7 +8,7 @@ import {
 import type { AuthUser } from '../core/types.js'
 import { useAuthClient } from './useAuthClient.js'
 import { ME_QUERY_KEY } from './key.js'
-import { SessionExpiredError } from '../core/errors.js'
+import { PanelAccessDeniedError, SessionExpiredError } from '../core/errors.js'
 
 export type UseMeOptions = Partial<
   Omit<UseQueryOptions<AuthUser, Error, AuthUser>, 'queryKey' | 'queryFn'>
@@ -43,6 +43,8 @@ export function useMe(options?: UseMeOptions): UseQueryReturnType<AuthUser, Erro
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
       if (error instanceof SessionExpiredError) return false
+      // 403 brak dostępu do panelu — terminalny, NIE retryujemy (inaczej pętla 403).
+      if (error instanceof PanelAccessDeniedError) return false
       return failureCount < 1
     },
     ...options,

@@ -91,6 +91,11 @@ export type AuthEvents = {
   'user-changed': AuthUser | null
   login: AuthUser | TokenResponse
   forbidden: ForbiddenPayload
+  // 403 z /me — brak dostępu do BIEŻĄCEGO panelu. Stan terminalny, ODRĘBNY od
+  // unauthorized/logout: sesja żyje, cookies nietknięte, NIE broadcastujemy do
+  // innych zakładek. Adaptery używają tego do zatrzymania pollingu i pokazania
+  // ekranu "brak dostępu" / login bez zapętlania.
+  'panel-access-denied': void
   // Error eventy — emitowane gdy odpowiednia metoda (login/logout/refresh) rzuca.
   // Konsument może podłączyć listener i np. pokazać toast bez try/catch w komponencie.
   // Uwaga: błąd JEST nadal rzucany z metody — eventy to dodatkowa droga, nie zastępują.

@@ -8,6 +8,7 @@ import {
   ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
+  PanelAccessDeniedError,
   SessionExpiredError,
 } from './errors.js'
 import type {
@@ -55,6 +56,12 @@ export type AuthClient = {
   // do disabledowania useMe — bez tego mielibyśmy pętlę refetch→401→refetch.
   // Reset na false dopiero przy nowym login().
   isSessionExpired(): boolean
+
+  // True jeśli ostatnie /me zwróciło 403 (brak dostępu do TEGO panelu). Stan
+  // terminalny i ODRĘBNY od isSessionExpired() — sesja żyje, cookies nietknięte.
+  // Adaptery używają tego do zatrzymania pollingu i pokazania ekranu "brak
+  // dostępu" / login bez zapętlania. Reset na false przy nowym login().
+  isPanelAccessDenied(): boolean
 
   // Programatyczny redirect przez paczkę. Respektuje `config.redirect` override
   // oraz wbudowany pathname guard (nie redirectuje gdy już jesteś na docelowej ścieżce).
@@ -175,6 +182,11 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   //            dopóki ktoś nie zawoła login() — bez tego pętla refetch→401→refetch.
   let sessionState: 'fresh' | 'expired' = 'fresh'
 
+  // Osobny od sessionState: 403 z /me (brak dostępu do bieżącego panelu). Sesja
+  // ŻYJE — to NIE jest wygaśnięcie. Adaptery wyłączają polling gdy true, żeby
+  // 403 nie zapętlało /me. Reset przy login().
+  let panelAccessDenied = false
+
   const setUser = (user: AuthUser | null) => {
     const changed =
       (cachedUser === null) !== (user === null) || (user && cachedUser?.id !== user.id)
@@ -191,6 +203,9 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   })
   emitter.on('login', () => {
     sessionState = 'fresh'
+    // Nowy login = świeża próba dostępu do panelu. Czyścimy terminalny 403,
+    // żeby po (ewentualnym) przelogowaniu /me mogło spróbować ponownie.
+    panelAccessDenied = false
   })
 
   const request = async <T>(rc: RequestConfig): Promise<T> => {
@@ -286,6 +301,21 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
           setUser(null)
           throw new SessionExpiredError('Not authenticated', err)
         }
+        if (isAxiosError(err) && err.response?.status === 403) {
+          // 403 z /me = brak dostępu do BIEŻĄCEGO panelu. Sesja żyje — świadomie:
+          //   - NIE robimy refresh (interceptor i tak ignoruje nie-401),
+          //   - NIE emitujemy unauthorized/logout, NIE ruszamy sessionState,
+          //   - NIE czyścimy cachedUser ani cookies, NIE broadcastujemy.
+          // Ustawiamy terminalny flag + redirect na login (jeśli skonfigurowany),
+          // żeby adaptery zatrzymały polling i pokazały "brak dostępu" bez pętli.
+          const message =
+            (err.response?.data as { error?: string } | undefined)?.error ??
+            'No access to this panel'
+          panelAccessDenied = true
+          emitter.emit('panel-access-denied', undefined)
+          if (loginPath) redirect(loginPath)
+          throw new PanelAccessDeniedError(message, err)
+        }
         throw err
       }
     },
@@ -343,6 +373,10 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
 
     isSessionExpired() {
       return sessionState === 'expired'
+    },
+
+    isPanelAccessDenied() {
+      return panelAccessDenied
     },
 
     redirectTo(path: string) {

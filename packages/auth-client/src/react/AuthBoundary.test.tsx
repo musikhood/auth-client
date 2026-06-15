@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, waitFor, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createAuthClient, type AuthClient } from '../core/client.js'
 import { AuthProvider } from './AuthProvider.js'
 import { AuthBoundary } from './AuthBoundary.js'
@@ -125,6 +126,88 @@ describe('<AuthBoundary protected>', () => {
       expect(redirect).toHaveBeenCalledWith('/forbidden')
     })
     expect(screen.queryByTestId('protected')).toBeNull()
+  })
+})
+
+// Odtwarza topologię pim_frontend: WSPÓLNY QueryClient na całą apkę + przejście
+// z chronionego boundary (/products) na guest boundary (/login) po 403. Cel:
+// dowieść braku pętli /me i stabilnego lądowania na /login dla usera bez dostępu.
+describe('<AuthBoundary> — 403 panel access denied (topologia pim)', () => {
+  it('403 na chronionym → skończona liczba /me, redirect na loginPath raz, brak broadcastu', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu do tego panelu.' } }
+    const redirect = vi.fn()
+    const onLogout = vi.fn()
+    const onUnauthorized = vi.fn()
+
+    // Jeden klient + jeden QueryClient — jak w app/root.tsx (useState(() => new QueryClient())).
+    const client = createAuthClient({ baseUrl: BASE_URL, loginPath: '/login', redirect })
+    client.on('logout', onLogout)
+    client.on('unauthorized', onUnauthorized)
+    const queryClient = new QueryClient()
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider client={client}>
+          <AuthBoundary fallback={<div data-testid="fb">spinner</div>}>
+            <div data-testid="protected">PRODUCTS</div>
+          </AuthBoundary>
+        </AuthProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(redirect).toHaveBeenCalledWith('/login'))
+    expect(screen.queryByTestId('protected')).toBeNull()
+    expect(client.isPanelAccessDenied()).toBe(true)
+
+    // Polling/retry zatrzymane — /me nie rośnie, redirect nie spirale.
+    const meAfter = state.meCalls
+    const redirectAfter = redirect.mock.calls.length
+    await new Promise((r) => setTimeout(r, 300))
+    expect(state.meCalls).toBe(meAfter)
+    expect(redirect.mock.calls.length).toBe(redirectAfter)
+
+    // KRYTYCZNE dla SSO cross-panel: 403 NIE wylogowuje globalnie.
+    expect(onLogout).not.toHaveBeenCalled()
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  it('po 403 guest boundary (/login) renderuje formularz i NIE strzela /me ponownie (wspólny klient/QueryClient)', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu.' } }
+    const redirect = vi.fn()
+    const client = createAuthClient({ baseUrl: BASE_URL, loginPath: '/login', redirect })
+    const queryClient = new QueryClient()
+
+    // Faza 1: chroniony boundary dostaje 403 (jak /products).
+    const protectedView = render(
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider client={client}>
+          <AuthBoundary fallback={<div data-testid="fb">spinner</div>}>
+            <div data-testid="protected">PRODUCTS</div>
+          </AuthBoundary>
+        </AuthProvider>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(client.isPanelAccessDenied()).toBe(true))
+    const meAfterProtected = state.meCalls
+    protectedView.unmount()
+
+    // Faza 2: ten sam klient + QueryClient, teraz guest boundary (jak /login po redirectcie).
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider client={client}>
+          <AuthBoundary mode="guest" fallback={<div data-testid="fb">spinner</div>}>
+            <div data-testid="login-form">FORMULARZ LOGOWANIA</div>
+          </AuthBoundary>
+        </AuthProvider>
+      </QueryClientProvider>,
+    )
+
+    // Formularz logowania widoczny (nie spinner, nie pętla).
+    await waitFor(() => expect(screen.queryByTestId('login-form')).toBeTruthy())
+
+    // /me NIE poleciało ponownie na /login — panelAccessDenied wyłącza query.
+    await new Promise((r) => setTimeout(r, 250))
+    expect(state.meCalls).toBe(meAfterProtected)
   })
 })
 

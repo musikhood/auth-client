@@ -5,6 +5,7 @@ import {
   ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
+  PanelAccessDeniedError,
   SessionExpiredError,
 } from './errors.js'
 import { BASE_URL, state } from '../test/server.js'
@@ -121,6 +122,62 @@ describe('me', () => {
     expect(redirect).toHaveBeenCalledWith('/login')
     expect(onUnauthorizedEvent).toHaveBeenCalledOnce()
     expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('me 403 — panel access denied (terminalny, BEZ wylogowania)', () => {
+  it('403 → PanelAccessDeniedError, NIE refresh, NIE unauthorized/logout, sesja żyje', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu do tego panelu.' } }
+
+    const onUnauthorized = vi.fn()
+    const onLogout = vi.fn()
+    const onDenied = vi.fn()
+    const client = newClient()
+    client.on('unauthorized', onUnauthorized)
+    client.on('logout', onLogout)
+    client.on('panel-access-denied', onDenied)
+
+    await expect(client.me()).rejects.toBeInstanceOf(PanelAccessDeniedError)
+
+    // Brak refresh (interceptor ignoruje nie-401).
+    expect(state.refreshCalls).toBe(0)
+    // NIE rozsyłamy unauthorized/logout — sesja na innych panelach żyje.
+    expect(onUnauthorized).not.toHaveBeenCalled()
+    expect(onLogout).not.toHaveBeenCalled()
+    // Emitujemy dedykowany event terminalny.
+    expect(onDenied).toHaveBeenCalledOnce()
+    // sessionState NIE jest expired — to nie wygaśnięcie.
+    expect(client.isSessionExpired()).toBe(false)
+    expect(client.isPanelAccessDenied()).toBe(true)
+  })
+
+  it('403 przenosi komunikat błędu z backendu', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu do tego panelu.' } }
+    const client = newClient()
+    await expect(client.me()).rejects.toMatchObject({
+      name: 'PanelAccessDeniedError',
+      status: 403,
+      message: 'Brak dostępu do tego panelu.',
+    })
+  })
+
+  it('403 redirectuje na loginPath (bez czyszczenia sesji)', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu.' } }
+    const redirect = vi.fn()
+    const client = newClient({ loginPath: '/login', redirect })
+
+    await expect(client.me()).rejects.toBeInstanceOf(PanelAccessDeniedError)
+    expect(redirect).toHaveBeenCalledWith('/login')
+  })
+
+  it('login() resetuje terminalny stan 403', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu.' } }
+    const client = newClient()
+    await expect(client.me()).rejects.toBeInstanceOf(PanelAccessDeniedError)
+    expect(client.isPanelAccessDenied()).toBe(true)
+
+    await client.login({ username: 'jan', password: 'tajne' })
+    expect(client.isPanelAccessDenied()).toBe(false)
   })
 })
 

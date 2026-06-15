@@ -72,6 +72,24 @@ describe('useAuth — wewnątrz AuthBoundary', () => {
     })
     expect(state.logoutCalls).toBe(1)
   })
+
+  it('403 z /me → user=null, NIE loading, polling zatrzymany (brak pętli)', async () => {
+    state.meResponse = { status: 403, body: { error: 'Brak dostępu do tego panelu.' } }
+
+    const { result } = renderHook(() => useAuth(), { wrapper: protectedWrapper })
+
+    // useAuth ustala terminalny stan: user null, isLoading false.
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false)
+      expect(result.current.user).toBeNull()
+    })
+    expect(result.current.isAuthenticated).toBe(false)
+
+    // Polling zatrzymany — liczba wywołań /me się stabilizuje (retry off + enabled off).
+    const callsAfterDeny = state.meCalls
+    await new Promise((r) => setTimeout(r, 120))
+    expect(state.meCalls).toBe(callsAfterDeny)
+  })
 })
 
 describe('useAuth — POZA AuthBoundary', () => {

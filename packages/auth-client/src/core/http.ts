@@ -61,6 +61,9 @@ export function createHttp({ baseUrl, emitter, onUnauthorized }: HttpDeps): Axio
       const original = error.config as RetriableConfig | undefined
       const status = error.response?.status
 
+      // TYLKO 401 odpala refresh. 403 (brak dostępu do panelu) świadomie
+      // przechodzi tędy nietknięte — NIE refreshujemy, mapowanie na terminalny
+      // PanelAccessDeniedError robi client.me().
       if (status !== 401 || !original) {
         return Promise.reject(error)
       }

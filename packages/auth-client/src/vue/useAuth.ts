@@ -44,18 +44,32 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
   const updateExpired = () => {
     sessionExpired.value = client.isSessionExpired()
   }
-  const offLogin = client.on('login', updateExpired)
+  // Odrębny terminalny flag: 403 brak dostępu do panelu (sesja żyje).
+  const panelAccessDenied = ref(client.isPanelAccessDenied())
+  const updatePanelDenied = () => {
+    panelAccessDenied.value = client.isPanelAccessDenied()
+  }
+  const offLogin = client.on('login', () => {
+    updateExpired()
+    updatePanelDenied() // login resetuje 403 w core
+  })
   const offLogout = client.on('logout', updateExpired)
   const offUnauthorized = client.on('unauthorized', updateExpired)
+  const offPanelDenied = client.on('panel-access-denied', updatePanelDenied)
   onScopeDispose(() => {
     offLogin()
     offLogout()
     offUnauthorized()
+    offPanelDenied()
   })
 
   // /me strzelamy w 'protected' oraz 'guest-checking'. null = nie strzelamy.
+  // 403 (panelAccessDenied) wyłącza /me — terminalnie, bez pętli.
   const enabled = computed(
-    () => (mode === 'protected' || mode === 'guest-checking') && !sessionExpired.value,
+    () =>
+      (mode === 'protected' || mode === 'guest-checking') &&
+      !sessionExpired.value &&
+      !panelAccessDenied.value,
   )
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
@@ -77,23 +91,28 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
   const sessionExpiredError = computed(() =>
     sessionExpired.value && !me.error.value ? new Error('Session expired') : null,
   )
+  // panelAccessDenied analogicznie: terminalny stan z user=null, isLoading=false.
+  const panelDeniedError = computed(() =>
+    panelAccessDenied.value && !me.error.value ? new Error('No access to this panel') : null,
+  )
+
+  // Stan terminalny (sesja martwa albo brak dostępu do panelu) — w obu user=null,
+  // isLoading=false, /me wyłączone. Różnica jest semantyczna (401 vs 403) i już
+  // obsłużona w core (czyszczenie cookies vs nie) — tu adapter tylko nie zapętla.
+  const terminal = computed(() => sessionExpired.value || panelAccessDenied.value)
 
   return {
     client,
-    user: computed(() => (sessionExpired.value ? null : (me.data.value ?? null))),
+    user: computed(() => (terminal.value ? null : (me.data.value ?? null))),
     isLoading: computed(() =>
-      sessionExpired.value ? false : enabled.value ? me.isLoading.value : false,
+      terminal.value ? false : enabled.value ? me.isLoading.value : false,
     ),
     isAuthenticated: computed(() =>
-      sessionExpired.value
-        ? false
-        : enabled.value
-          ? !me.isError.value && me.data.value != null
-          : false,
+      terminal.value ? false : enabled.value ? !me.isError.value && me.data.value != null : false,
     ),
     error: computed(() =>
-      sessionExpired.value
-        ? (me.error.value ?? sessionExpiredError.value)
+      terminal.value
+        ? (me.error.value ?? sessionExpiredError.value ?? panelDeniedError.value)
         : enabled.value
           ? me.error.value
           : null,

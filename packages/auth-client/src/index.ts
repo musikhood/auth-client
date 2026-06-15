@@ -7,6 +7,7 @@ export {
   ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
+  PanelAccessDeniedError,
   SessionExpiredError,
 } from './core/errors.js'
 export type {

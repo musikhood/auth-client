@@ -27,6 +27,23 @@ function useSessionExpired(client: AuthClient): boolean {
   )
 }
 
+// Subskrypcja na terminalny stan 403 (brak dostępu do panelu). Odrębny od
+// sessionExpired — re-render przy 'panel-access-denied' oraz 'login' (reset).
+function usePanelAccessDenied(client: AuthClient): boolean {
+  return useSyncExternalStore(
+    (callback) => {
+      const offDenied = client.on('panel-access-denied', callback)
+      const offLogin = client.on('login', callback)
+      return () => {
+        offDenied()
+        offLogin()
+      }
+    },
+    () => client.isPanelAccessDenied(),
+    () => false, // SSR
+  )
+}
+
 // Callable wrapper nad UseMutationResult — funkcja, która:
 //   - wołana jak funkcja, robi mutateAsync (zwraca Promise),
 //   - ma wszystkie pola mutation (isPending, error, reset, ...).
@@ -60,7 +77,11 @@ export function useAuth() {
   //   - mode === null             (poza boundary)
   //   - sessionExpired === true   (po logout / refresh fail, czeka na nowy login)
   const sessionExpired = useSessionExpired(client)
-  const enabled = (mode === 'protected' || mode === 'guest-checking') && !sessionExpired
+  const panelAccessDenied = usePanelAccessDenied(client)
+  // 403 brak dostępu do panelu = stan terminalny. Wyłączamy /me (jak przy
+  // sessionExpired), żeby polling nie zapętlał 403.
+  const enabled =
+    (mode === 'protected' || mode === 'guest-checking') && !sessionExpired && !panelAccessDenied
   // Polling tylko w trybie 'protected'.
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
@@ -97,6 +118,17 @@ export function useAuth() {
         isLoading: false,
         isAuthenticated: false,
         error: meQuery.error ?? new Error('Session expired'),
+      }
+    }
+    if (panelAccessDenied) {
+      // Sesja żyje, ale brak dostępu do tego panelu. user=null → AuthBoundary
+      // renderuje fallback i (przez !user) redirectuje na loginPath. Polling
+      // wyłączony przez enabled=false — bez pętli 403.
+      return {
+        user: null,
+        isLoading: false,
+        isAuthenticated: false,
+        error: meQuery.error ?? new Error('No access to this panel'),
       }
     }
     if (enabled) {
