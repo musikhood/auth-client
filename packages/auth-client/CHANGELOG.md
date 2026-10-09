@@ -4,6 +4,62 @@ Wszystkie istotne zmiany w `@musikhood-dev/auth-client`.
 
 Format luźno wg [Keep a Changelog](https://keepachangelog.com/); wersjonowanie semver.
 
+## [2.2.0]
+
+Minor, wstecznie zgodny. Backend bez pola `code` w błędach = zachowanie jak w 2.1.
+
+### Added — 2FA (TOTP)
+
+- **Błędy:** `MfaRequiredError { mfaToken, methods }` (podklasa `InvalidCredentialsError` — stary kod
+  łapiący złe dane nadal działa, fail-closed), `MfaEnrollmentRequiredError { enrollmentUrl }` (podklasa
+  `LoginForbiddenError`), `MfaStepUpRequiredError`, `MfaInvalidCodeError`, `MfaTokenExpiredError`,
+  `TooManyAttemptsError { retryAfter }`, `MfaAlreadyEnabledError` (409), `DeviceMismatchError`
+  (podklasa `SessionExpiredError`).
+- **Metody:** `verifyMfa({ mfaToken, code?, recoveryCode?, rememberDevice? })`,
+  `stepUpMfa({ code?, recoveryCode?, rememberDevice? })`, `requestMfaEnrollment()` → URL,
+  `startMfaEnrollment(url?)`, `getMfaState()`, `isMfaStepUpRequired()`, `resetMfa()`.
+- **Eventy:** `mfa-required`, `mfa-step-up-required`, `mfa-enrollment-required { enrollmentUrl }`,
+  `mfa-state-changed`.
+- `login()` mapuje `code` z body: `mfa_required` (401), `mfa_enrollment_required` (403),
+  `too_many_attempts` (429).
+- `/me` + interceptor: 403 `mfa_step_up` → event + stan `step-up`, **bez** redirectu na login i bez
+  `panel-access-denied`; 403 `mfa_enrollment_required` → event `{ enrollmentUrl: null }` (bramka per request
+  nie wydaje linku — UI prosi o hasło i woła `requestMfaEnrollment`). 401 `device_mismatch_recheck`
+  → zwykły refresh i retry. Refresh 401 `device_mismatch` → `DeviceMismatchError`.
+- **Adaptery:** React `useMfa()` / Vue `useMfa()` — `{ stage, mfaToken, methods, enrollmentUrl, verify,
+stepUp, startEnrollment, requestEnrollment(password), reset }`, zintegrowane z `useAuth().login`. `useAuth()`
+  zwraca `mfaStepUpRequired` / `mfaEnrollmentRequired`; `AuthBoundary` nie redirectuje i nie zapętla
+  `/me` w trakcie step-upu / enrollmentu.
+- `confirmMfaEnrollment({ enrollmentToken, code })` → `{ recoveryCodes, returnUrl, session }` (strona
+  konfiguracji): wysyła `device`; gdy auth-server od razu loguje usera z 2FA (`session != null`) — event `login`.
+- `MfaInvalidCodeError.reason`: `'invalid'` | `'reused'` (401 `mfa_code_reused` — poprawny kod z już użytego
+  kroku czasowego). Ta sama klasa, więc istniejący kod łapiący `MfaInvalidCodeError` działa bez zmian.
+- `ENDPOINTS.loginMfa`, `ENDPOINTS.sessionMfa`, `ENDPOINTS.mfaEnrollmentRequest`, `ENDPOINTS.mfaEnrollmentConfirm`,
+  `AUTH_CODES`, `DEVICE_FP_HEADER`.
+
+### Added — fingerprint urządzenia
+
+- `core/device.ts`: kolektor komponentów (bez zewnętrznych bibliotek, lekki parser UA +
+  `navigator.userAgentData`), hash SHA-256 (`crypto.subtle`) z kanonicznego JSON — zgodny bajt w bajt
+  z API Core (wspólny wektor testowy). SSR-safe, cache na czas życia strony.
+- Config `deviceFingerprint?: boolean` (**default `true`**): nagłówek `X-Device-Fp` na każdym requeście,
+  `device` w body loginu / refreshu / `verifyMfa` / `stepUpMfa`.
+
+### Fixed
+
+- Adaptery React/Vue rozpoznają błędy klienta po `name` (`isAuthErrorNamed`), nie `instanceof` —
+  entry `/react` i `/vue` mają własne kopie klas błędów (tsup `splitting: false`), więc `instanceof`
+  na błędzie rzuconym przez klienta z głównego entry był fałszywy (dotyczyło m.in. `retry` w `useMe`
+  dla `PanelAccessDeniedError` / `SessionExpiredError`).
+- Po udanym step-upie / konfiguracji 2FA `useAuth` nie zwraca chwilowo `user=null` (stary błąd `/me`
+  z fazy 2FA traktowany jako ładowanie) — brak mignięcia przekierowania na login.
+
+### Uwaga przy aktualizacji
+
+- Backend (CORS) musi dopuszczać nagłówek **`X-Device-Fp`** (`allow_headers`), a dla
+  `TooManyAttemptsError.retryAfter` wystawiać `Retry-After` (`expose_headers`). Konsumenci przez
+  auth-client-bundle: CORS własnego backendu. Bez tego ustaw `deviceFingerprint: false`.
+
 ## [2.1.0]
 
 ### Added

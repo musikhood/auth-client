@@ -2,14 +2,31 @@ import type { AxiosInstance } from 'axios'
 import axios, { isAxiosError } from 'axios'
 import { createAuthEmitter, type AuthEmitter } from './events.js'
 import { attachBroadcastSync } from './broadcast.js'
-import { createHttp, ENDPOINTS, type RequestConfig } from './http.js'
+import {
+  AUTH_CODES,
+  createHttp,
+  ENDPOINTS,
+  errorBody,
+  refreshPayload,
+  retryAfterSeconds,
+  type RequestConfig,
+} from './http.js'
+import { createDeviceFingerprintProvider, type DeviceFingerprintProvider } from './device.js'
 import {
   AuthError,
+  DeviceMismatchError,
   ForbiddenRoleError,
   InvalidCredentialsError,
   LoginForbiddenError,
+  MfaAlreadyEnabledError,
+  MfaEnrollmentRequiredError,
+  MfaInvalidCodeError,
+  MfaRequiredError,
+  MfaStepUpRequiredError,
+  MfaTokenExpiredError,
   PanelAccessDeniedError,
   SessionExpiredError,
+  TooManyAttemptsError,
 } from './errors.js'
 import type {
   AuthClientConfig,
@@ -19,6 +36,12 @@ import type {
   AuthUser,
   LoginCredentials,
   LogoutResponse,
+  MfaEnrollmentConfirmInput,
+  MfaEnrollmentConfirmResult,
+  MfaEnrollmentRequestInput,
+  MfaState,
+  MfaStepUpInput,
+  MfaVerifyInput,
   TokenResponse,
 } from './types.js'
 
@@ -62,6 +85,32 @@ export type AuthClient = {
   // Adaptery używają tego do zatrzymania pollingu i pokazania ekranu "brak
   // dostępu" / login bez zapętlania. Reset na false przy nowym login().
   isPanelAccessDenied(): boolean
+
+  // ---- 2FA (2.2.0) ----
+  // Drugi krok logowania po MfaRequiredError. Sukces = jak udany login() (cookies,
+  // event 'login'). Błędy: MfaInvalidCodeError (można ponowić), MfaTokenExpiredError
+  // (zacznij od nowa), TooManyAttemptsError, LoginForbiddenError.
+  verifyMfa(input: MfaVerifyInput): Promise<TokenResponse>
+  // Step-up bieżącej sesji (po 403 mfa_step_up). Sukces = nowe cookies + event 'login'.
+  stepUpMfa(input: MfaStepUpInput): Promise<TokenResponse>
+  // Link do konfiguracji 2FA dla zalogowanego usera — wymaga aktualnego hasła.
+  // Błędy: InvalidCredentialsError (złe hasło), MfaAlreadyEnabledError (409),
+  // TooManyAttemptsError (429).
+  requestMfaEnrollment(input: MfaEnrollmentRequestInput): Promise<string>
+  // Przekierowuje (pełna nawigacja) na stronę konfiguracji 2FA: podany URL albo URL
+  // ze stanu (MfaEnrollmentRequiredError z loginu). Bez URL rzuca — wtedy najpierw
+  // requestMfaEnrollment({ password }).
+  startMfaEnrollment(url?: string): Promise<void>
+  // Potwierdza konfigurację 2FA pierwszym kodem (strona /setup-2fa), wysyła fingerprint
+  // urządzenia. Gdy auth-server od razu zaloguje usera (session != null) — cookies
+  // ustawione + event 'login' (odświeżenie /me). Błędy: MfaInvalidCodeError (reason
+  // 'invalid' | 'reused'), MfaTokenExpiredError, MfaAlreadyEnabledError, TooManyAttemptsError.
+  confirmMfaEnrollment(input: MfaEnrollmentConfirmInput): Promise<MfaEnrollmentConfirmResult>
+  getMfaState(): MfaState
+  isMfaStepUpRequired(): boolean
+  resetMfa(): void
+  // Fingerprint urządzenia (null gdy wyłączony / SSR). Do własnych wywołań backendu.
+  readonly device: DeviceFingerprintProvider | null
 
   // Programatyczny redirect przez paczkę. Respektuje `config.redirect` override
   // oraz wbudowany pathname guard (nie redirectuje gdy już jesteś na docelowej ścieżce).
@@ -152,10 +201,37 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
     return false
   }
 
+  // Fingerprint urządzenia — default ON, wyłączany `deviceFingerprint: false`.
+  // SSR (brak window) → null, requesty idą bez nagłówka / pola device.
+  const device: DeviceFingerprintProvider | null =
+    config.deviceFingerprint !== false && typeof window !== 'undefined'
+      ? createDeviceFingerprintProvider()
+      : null
+
+  const IDLE_MFA: MfaState = { stage: 'idle', mfaToken: null, methods: [], enrollmentUrl: null }
+  let mfaState: MfaState = IDLE_MFA
+  const setMfaState = (next: MfaState) => {
+    mfaState = next
+    emitter.emit('mfa-state-changed', next)
+  }
+
   const http = createHttp({
     baseUrl: config.baseUrl,
     emitter,
     onUnauthorized: loginPath ? () => redirect(loginPath) : undefined,
+    device,
+    // 403 mfa_step_up z dowolnego requestu: sesja żyje, panel wymaga kodu. Event
+    // tylko przy przejściu w stan step-up (bez zalewania modalami przy N requestach).
+    onMfaStepUp: () => {
+      if (mfaState.stage === 'step-up') return
+      setMfaState({ ...IDLE_MFA, stage: 'step-up' })
+      emitter.emit('mfa-step-up-required', undefined)
+    },
+    onMfaEnrollment: (enrollmentUrl) => {
+      if (mfaState.stage === 'enrollment' && mfaState.enrollmentUrl === enrollmentUrl) return
+      setMfaState({ ...IDLE_MFA, stage: 'enrollment', enrollmentUrl })
+      emitter.emit('mfa-enrollment-required', { enrollmentUrl })
+    },
   })
 
   // Redirect na loginPath przy:
@@ -202,6 +278,8 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
     sessionState = 'expired'
   })
   emitter.on('login', () => {
+    // Udany login / verifyMfa / stepUpMfa (także z innej zakładki) kończy każdy etap 2FA.
+    if (mfaState.stage !== 'idle') setMfaState(IDLE_MFA)
     sessionState = 'fresh'
     // Nowy login = świeża próba dostępu do panelu. Czyścimy terminalny 403,
     // żeby po (ewentualnym) przelogowaniu /me mogło spróbować ponownie.
@@ -211,6 +289,30 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
   const request = async <T>(rc: RequestConfig): Promise<T> => {
     const res = await http.request<T>(rc)
     return res.data
+  }
+
+  const withDevice = async <T extends Record<string, unknown>>(
+    body: T,
+  ): Promise<T & { device?: unknown }> => {
+    const fp = device ? await device.get() : null
+    return fp ? { ...body, device: fp.components } : body
+  }
+
+  // Wspólne mapowanie błędów kroków 2FA (verifyMfa / stepUpMfa).
+  const mapMfaError = (err: unknown): Error => {
+    if (!isAxiosError(err)) return err instanceof Error ? err : new Error(String(err))
+    const status = err.response?.status
+    const body = errorBody(err)
+    const message = body.error ?? err.message
+    if (status === 429) return new TooManyAttemptsError(retryAfterSeconds(err), message, err)
+    if (body.code === AUTH_CODES.mfaInvalidCode) return new MfaInvalidCodeError(message, err)
+    if (body.code === AUTH_CODES.mfaCodeReused)
+      return new MfaInvalidCodeError(message, err, 'reused')
+    if (body.code === AUTH_CODES.mfaAlreadyEnabled) return new MfaAlreadyEnabledError(message, err)
+    if (body.code === AUTH_CODES.mfaTokenExpired) return new MfaTokenExpiredError(message, err)
+    if (status === 403) return new LoginForbiddenError(message, err)
+    if (status === 401) return new SessionExpiredError(message, err)
+    return new AuthError(message, status, err)
   }
 
   const client: AuthClient = {
@@ -230,7 +332,7 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
         const tokens = await request<TokenResponse>({
           method: 'POST',
           url: ENDPOINTS.login,
-          data: credentials,
+          data: await withDevice({ ...credentials }),
         })
         emitter.emit('login', tokens)
         return tokens
@@ -238,15 +340,149 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
         let mapped: Error = err instanceof Error ? err : new Error(String(err))
         if (isAxiosError(err)) {
           const status = err.response?.status
-          const message =
-            (err.response?.data as { error?: string } | undefined)?.error ?? err.message
-          if (status === 401) mapped = new InvalidCredentialsError(message, err)
+          const body = errorBody(err)
+          const message = body.error ?? err.message
+          if (
+            status === 401 &&
+            body.code === AUTH_CODES.mfaRequired &&
+            typeof body.mfa_token === 'string'
+          ) {
+            const methods = Array.isArray(body.methods)
+              ? body.methods.filter((m): m is string => typeof m === 'string')
+              : []
+            mapped = new MfaRequiredError(body.mfa_token, methods, message, err)
+            setMfaState({ ...IDLE_MFA, stage: 'code', mfaToken: body.mfa_token, methods })
+            emitter.emit('mfa-required', mfaState)
+          } else if (status === 403 && body.code === AUTH_CODES.mfaEnrollmentRequired) {
+            const url = typeof body.enrollment_url === 'string' ? body.enrollment_url : null
+            mapped = new MfaEnrollmentRequiredError(url, message, err)
+            setMfaState({ ...IDLE_MFA, stage: 'enrollment', enrollmentUrl: url })
+          } else if (status === 429)
+            mapped = new TooManyAttemptsError(retryAfterSeconds(err), message, err)
+          else if (status === 401) mapped = new InvalidCredentialsError(message, err)
           else if (status === 403) mapped = new LoginForbiddenError(message, err)
         }
         emitter.emit('login-error', mapped)
         throw mapped
       }
     },
+
+    async verifyMfa(input) {
+      try {
+        const tokens = await request<TokenResponse>({
+          method: 'POST',
+          url: ENDPOINTS.loginMfa,
+          data: await withDevice({
+            mfa_token: input.mfaToken,
+            code: input.code,
+            recovery_code: input.recoveryCode,
+            remember_device: input.rememberDevice === true,
+          }),
+        })
+        emitter.emit('login', tokens)
+        return tokens
+      } catch (err) {
+        const mapped = mapMfaError(err)
+        // Wygasły / zużyty token albo blokada konta → wracamy do formularza hasła.
+        if (mapped instanceof MfaTokenExpiredError || mapped instanceof LoginForbiddenError) {
+          setMfaState(IDLE_MFA)
+        }
+        emitter.emit('login-error', mapped)
+        throw mapped
+      }
+    },
+
+    async stepUpMfa(input) {
+      try {
+        const tokens = await request<TokenResponse>({
+          method: 'POST',
+          url: ENDPOINTS.sessionMfa,
+          data: await withDevice({
+            code: input.code,
+            recovery_code: input.recoveryCode,
+            remember_device: input.rememberDevice === true,
+          }),
+        })
+        emitter.emit('login', tokens)
+        return tokens
+      } catch (err) {
+        const mapped = err instanceof SessionExpiredError ? err : mapMfaError(err)
+        emitter.emit('login-error', mapped)
+        throw mapped
+      }
+    },
+
+    async requestMfaEnrollment(input) {
+      try {
+        const res = await request<{ enrollment_url: string }>({
+          method: 'POST',
+          url: ENDPOINTS.mfaEnrollmentRequest,
+          data: { password: input.password },
+        })
+        return res.enrollment_url
+      } catch (err) {
+        if (!isAxiosError(err)) throw err
+        const status = err.response?.status
+        const body = errorBody(err)
+        const message = body.error ?? err.message
+        if (status === 429) throw new TooManyAttemptsError(retryAfterSeconds(err), message, err)
+        if (body.code === AUTH_CODES.mfaAlreadyEnabled)
+          throw new MfaAlreadyEnabledError(message, err)
+        if (body.code === AUTH_CODES.invalidCredentials)
+          throw new InvalidCredentialsError(message, err)
+        throw new AuthError(message, status, err)
+      }
+    },
+
+    async confirmMfaEnrollment(input) {
+      try {
+        const res = await request<
+          Partial<TokenResponse> & { recovery_codes: string[]; return_url: string }
+        >({
+          method: 'POST',
+          url: ENDPOINTS.mfaEnrollmentConfirm,
+          data: await withDevice({ enrollment_token: input.enrollmentToken, code: input.code }),
+        })
+        const session: TokenResponse | null =
+          typeof res.token === 'string' && typeof res.refresh_token === 'string'
+            ? {
+                token: res.token,
+                refresh_token: res.refresh_token,
+                refresh_token_expiration: res.refresh_token_expiration ?? 0,
+                token_expiration: res.token_expiration ?? 0,
+              }
+            : null
+        if (session) {
+          setMfaState(IDLE_MFA)
+          emitter.emit('login', session)
+        }
+        return { recoveryCodes: res.recovery_codes, returnUrl: res.return_url, session }
+      } catch (err) {
+        throw mapMfaError(err)
+      }
+    },
+
+    async startMfaEnrollment(url) {
+      const target = url ?? mfaState.enrollmentUrl
+      if (!target) {
+        throw new AuthError('No enrollment URL — call requestMfaEnrollment({ password }) first')
+      }
+      if (typeof window !== 'undefined') window.location.assign(target)
+    },
+
+    getMfaState() {
+      return mfaState
+    },
+
+    isMfaStepUpRequired() {
+      return mfaState.stage === 'step-up'
+    },
+
+    resetMfa() {
+      if (mfaState.stage !== 'idle') setMfaState(IDLE_MFA)
+    },
+
+    device,
 
     async logout(options) {
       const skipRedirect = options?.redirect === false
@@ -302,6 +538,20 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
           throw new SessionExpiredError('Not authenticated', err)
         }
         if (isAxiosError(err) && err.response?.status === 403) {
+          const body = errorBody(err)
+          // 403 z kodem 2FA: sesja ŻYJE, to nie jest brak dostępu do panelu. Bez
+          // redirectu na login i bez terminalnego panelAccessDenied — interceptor
+          // już ustawił stan 2FA i wyemitował event (modal step-up / enrollment).
+          if (body.code === AUTH_CODES.mfaStepUp) {
+            throw new MfaStepUpRequiredError(body.error ?? 'Two-factor verification required', err)
+          }
+          if (body.code === AUTH_CODES.mfaEnrollmentRequired) {
+            throw new MfaEnrollmentRequiredError(
+              typeof body.enrollment_url === 'string' ? body.enrollment_url : null,
+              body.error ?? 'Two-factor authentication setup required',
+              err,
+            )
+          }
           // 403 z /me = brak dostępu do BIEŻĄCEGO panelu. Sesja żyje — świadomie:
           //   - NIE robimy refresh (interceptor i tak ignoruje nie-401),
           //   - NIE emitujemy unauthorized/logout, NIE ruszamy sessionState,
@@ -323,17 +573,21 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
     async refresh() {
       // Manualny refresh — używa świeżej instancji axios żeby ominąć interceptor.
       try {
-        const res = await axios.post<TokenResponse>(
-          ENDPOINTS.refresh,
-          {},
-          { baseURL: config.baseUrl, withCredentials: true },
-        )
+        const { body, headers } = await refreshPayload(device)
+        const res = await axios.post<TokenResponse>(ENDPOINTS.refresh, body, {
+          baseURL: config.baseUrl,
+          withCredentials: true,
+          headers,
+        })
         return res.data
       } catch (err) {
         emitter.emit('unauthorized', undefined)
         emitter.emit('user-changed', null)
         if (loginPath) redirect(loginPath)
-        const mapped = new SessionExpiredError('Session expired', err)
+        const mapped =
+          errorBody(err).code === AUTH_CODES.deviceMismatch
+            ? new DeviceMismatchError('Session revoked: device mismatch', err)
+            : new SessionExpiredError('Session expired', err)
         emitter.emit('refresh-error', mapped)
         throw mapped
       }

@@ -2,7 +2,7 @@ import { useQuery, type UseQueryOptions, type UseQueryResult } from '@tanstack/r
 import type { AuthUser } from '../core/types.js'
 import { useAuthClient } from './useAuthClient.js'
 import { ME_QUERY_KEY } from './context.js'
-import { ForbiddenRoleError, PanelAccessDeniedError, SessionExpiredError } from '../core/errors.js'
+import { isAuthErrorNamed } from '../core/errors.js'
 
 export type UseMeOptions = Omit<
   UseQueryOptions<AuthUser, Error, AuthUser, typeof ME_QUERY_KEY>,
@@ -19,10 +19,14 @@ export function useMe(options?: UseMeOptions): UseQueryResult<AuthUser, Error> {
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
       // Stany terminalne — nie retryujemy, paczka już zrobiła cleanup + redirect.
-      if (error instanceof SessionExpiredError) return false
-      if (error instanceof ForbiddenRoleError) return false
+      if (isAuthErrorNamed(error, 'SessionExpiredError')) return false
+      if (isAuthErrorNamed(error, 'DeviceMismatchError')) return false
+      if (isAuthErrorNamed(error, 'ForbiddenRoleError')) return false
       // 403 brak dostępu do panelu — terminalny, NIE retryujemy (inaczej pętla 403).
-      if (error instanceof PanelAccessDeniedError) return false
+      if (isAuthErrorNamed(error, 'PanelAccessDeniedError')) return false
+      // 2FA (step-up / enrollment) — czeka na akcję usera, retry nic nie da.
+      if (isAuthErrorNamed(error, 'MfaStepUpRequiredError')) return false
+      if (isAuthErrorNamed(error, 'MfaEnrollmentRequiredError')) return false
       return failureCount < 1
     },
     ...options,

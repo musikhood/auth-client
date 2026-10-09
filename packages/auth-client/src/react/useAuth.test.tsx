@@ -59,7 +59,8 @@ describe('useAuth — wewnątrz AuthBoundary', () => {
       await result.current.login({ username: 'x', password: 'y' }).catch(() => {})
     })
 
-    expect(result.current.login.error).not.toBeNull()
+    // waitFor: od 2.2 login liczy fingerprint (async) — stan mutation dochodzi tick później.
+    await waitFor(() => expect(result.current.login.error).not.toBeNull())
   })
 
   it('logout jest callable', async () => {

@@ -34,7 +34,8 @@ export const AuthBoundary = defineComponent({
     // WAŻNE: przekazujemy tryb jawnie. inject() w tym samym setupie NIE widzi
     // provide() powyżej (Vue: provide jest widoczne tylko dla potomków), więc bez
     // tego boundary'owy useAuth dostawałby mode=null → /me nigdy by nie leciało.
-    const { user, isLoading } = useAuth(boundaryMode)
+    const { user, isLoading, mfaStepUpRequired, mfaEnrollmentRequired } = useAuth(boundaryMode)
+    const mfaPending = computed(() => mfaStepUpRequired.value || mfaEnrollmentRequired.value)
 
     const config = client.config
     const loginPath = config.loginPath
@@ -55,9 +56,11 @@ export const AuthBoundary = defineComponent({
     })
 
     watch(
-      [isLoading, user, hasRequiredRoles],
-      ([loading, u, hasRoles]) => {
+      [isLoading, user, hasRequiredRoles, mfaPending],
+      ([loading, u, hasRoles, pending]) => {
         if (loading) return
+        // 2FA w toku: sesja żyje — bez redirectu na login / home.
+        if (pending) return
         if (props.mode === 'protected') {
           if (!u) {
             if (loginPath) client.redirectTo(loginPath)

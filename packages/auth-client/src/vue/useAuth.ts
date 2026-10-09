@@ -5,6 +5,8 @@ import { useMe } from './useMe.js'
 import { useLogin } from './useLogin.js'
 import { useLogout } from './useLogout.js'
 import { AUTH_PROTECTED_KEY, type AuthProtectedMode } from './key.js'
+import { useMfaState } from './useMfa.js'
+import { isAuthErrorNamed } from '../core/errors.js'
 import type { LoginCredentials, TokenResponse, LogoutResponse } from '../core/types.js'
 
 type CallableMutation<TData, TError, TVariables> = UseMutationReturnType<
@@ -63,13 +65,20 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
     offPanelDenied()
   })
 
+  // 2FA: step-up / enrollment wstrzymują /me (403 z kodem nie zapętla pollingu).
+  const mfaState = useMfaState(client)
+  const mfaBlocked = computed(
+    () => mfaState.value.stage === 'step-up' || mfaState.value.stage === 'enrollment',
+  )
+
   // /me strzelamy w 'protected' oraz 'guest-checking'. null = nie strzelamy.
   // 403 (panelAccessDenied) wyłącza /me — terminalnie, bez pętli.
   const enabled = computed(
     () =>
       (mode === 'protected' || mode === 'guest-checking') &&
       !sessionExpired.value &&
-      !panelAccessDenied.value,
+      !panelAccessDenied.value &&
+      !mfaBlocked.value,
   )
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
@@ -101,15 +110,48 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
   // obsłużona w core (czyszczenie cookies vs nie) — tu adapter tylko nie zapętla.
   const terminal = computed(() => sessionExpired.value || panelAccessDenied.value)
 
+  // Sesja żyje, czeka na kod (step-up) / konfigurację 2FA: zostawiamy ostatnio
+  // znanego usera, isLoading=false — AuthBoundary NIE redirectuje na login.
+  const mfaUser = computed(() => me.data.value ?? client.getCachedUser())
+  // Tuż po step-upie / konfiguracji 2FA błąd /me pochodzi jeszcze z fazy 2FA, a
+  // refetch jest w drodze — traktujemy jako ładowanie (bez chwilowego user=null).
+  const staleMfaError = computed(
+    () =>
+      enabled.value &&
+      (isAuthErrorNamed(me.error.value, 'MfaStepUpRequiredError') ||
+        isAuthErrorNamed(me.error.value, 'MfaEnrollmentRequiredError')),
+  )
+  const inBoundary = mode === 'protected' || mode === 'guest-checking'
+
   return {
     client,
-    user: computed(() => (terminal.value ? null : (me.data.value ?? null))),
+    user: computed(() =>
+      terminal.value
+        ? null
+        : (mfaBlocked.value && inBoundary) || staleMfaError.value
+          ? (mfaUser.value ?? null)
+          : (me.data.value ?? null),
+    ),
     isLoading: computed(() =>
-      terminal.value ? false : enabled.value ? me.isLoading.value : false,
+      terminal.value || mfaBlocked.value
+        ? false
+        : staleMfaError.value
+          ? mfaUser.value == null
+          : enabled.value
+            ? me.isLoading.value
+            : false,
     ),
     isAuthenticated: computed(() =>
-      terminal.value ? false : enabled.value ? !me.isError.value && me.data.value != null : false,
+      terminal.value
+        ? false
+        : mfaBlocked.value && inBoundary
+          ? mfaUser.value != null
+          : enabled.value
+            ? !me.isError.value && me.data.value != null
+            : false,
     ),
+    mfaStepUpRequired: computed(() => mfaState.value.stage === 'step-up'),
+    mfaEnrollmentRequired: computed(() => mfaState.value.stage === 'enrollment'),
     error: computed(() =>
       terminal.value
         ? (me.error.value ?? sessionExpiredError.value ?? panelDeniedError.value)

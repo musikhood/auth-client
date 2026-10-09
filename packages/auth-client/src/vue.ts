@@ -6,4 +6,5 @@
 export { createAuth, type AuthPlugin } from './vue/plugin.js'
 export { AuthBoundary } from './vue/AuthBoundary.js'
 export { useAuth } from './vue/useAuth.js'
+export { useMfa, type UseMfaReturn, type UseMfaVerifyInput } from './vue/useMfa.js'
 export { AUTH_CLIENT_KEY, ME_QUERY_KEY } from './vue/key.js'

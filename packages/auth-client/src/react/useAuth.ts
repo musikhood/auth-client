@@ -5,6 +5,8 @@ import { useLogin } from './useLogin.js'
 import { useLogout } from './useLogout.js'
 import { useAuthClient } from './useAuthClient.js'
 import { AuthProtectedContext } from './context.js'
+import { useMfaState } from './useMfa.js'
+import { isAuthErrorNamed } from '../core/errors.js'
 import type { AuthClient } from '../core/client.js'
 import type { LoginCredentials, TokenResponse, LogoutResponse } from '../core/types.js'
 
@@ -78,10 +80,17 @@ export function useAuth() {
   //   - sessionExpired === true   (po logout / refresh fail, czeka na nowy login)
   const sessionExpired = useSessionExpired(client)
   const panelAccessDenied = usePanelAccessDenied(client)
+  // 2FA: step-up / enrollment wstrzymują /me (403 z kodem nie może zapętlać
+  // pollingu). Udany stepUp/verify emituje 'login' → stan idle → /me wraca.
+  const mfaStage = useMfaState(client).stage
+  const mfaBlocked = mfaStage === 'step-up' || mfaStage === 'enrollment'
   // 403 brak dostępu do panelu = stan terminalny. Wyłączamy /me (jak przy
   // sessionExpired), żeby polling nie zapętlał 403.
   const enabled =
-    (mode === 'protected' || mode === 'guest-checking') && !sessionExpired && !panelAccessDenied
+    (mode === 'protected' || mode === 'guest-checking') &&
+    !sessionExpired &&
+    !panelAccessDenied &&
+    !mfaBlocked
   // Polling tylko w trybie 'protected'.
   const configInterval = client.config.meRefetchInterval
   const refetchInterval =
@@ -131,6 +140,35 @@ export function useAuth() {
         error: meQuery.error ?? new Error('No access to this panel'),
       }
     }
+    if (mfaBlocked && (mode === 'protected' || mode === 'guest-checking')) {
+      // Sesja żyje, czeka na kod (step-up) albo konfigurację 2FA. Zostawiamy
+      // ostatnio znanego usera (jeśli był) — aplikacja może dalej renderować pod
+      // modalem; AuthBoundary NIE redirectuje na login w tym stanie.
+      const cached = meQuery.data ?? client.getCachedUser()
+      return {
+        user: cached ?? null,
+        isLoading: false,
+        isAuthenticated: cached != null,
+        error: meQuery.error,
+      }
+    }
+    if (
+      enabled &&
+      (isAuthErrorNamed(meQuery.error, 'MfaStepUpRequiredError') ||
+        isAuthErrorNamed(meQuery.error, 'MfaEnrollmentRequiredError'))
+    ) {
+      // Tuż po udanym step-upie / konfiguracji: błąd /me pochodzi jeszcze z fazy
+      // 2FA, a refetch (po evencie 'login') jest w drodze. Traktujemy to jako
+      // ładowanie — inaczej AuthBoundary na moment uznałby, że sesji nie ma,
+      // i przekierował na login.
+      const cached = meQuery.data ?? client.getCachedUser()
+      return {
+        user: cached ?? null,
+        isLoading: cached == null,
+        isAuthenticated: cached != null,
+        error: null,
+      }
+    }
     if (enabled) {
       return {
         user: meQuery.data ?? null,
@@ -145,6 +183,8 @@ export function useAuth() {
   return {
     client,
     ...result,
+    mfaStepUpRequired: mfaStage === 'step-up',
+    mfaEnrollmentRequired: mfaStage === 'enrollment',
     refetch: meQuery.refetch,
     login,
     logout,
