@@ -45,7 +45,8 @@ function AuthBoundaryInner({
   requireAnyRole,
 }: AuthBoundaryProps) {
   const client = useAuthClient()
-  const { user, isLoading } = useAuth()
+  const { user, isLoading, mfaStepUpRequired, mfaEnrollmentRequired } = useAuth()
+  const mfaPending = mfaStepUpRequired || mfaEnrollmentRequired
 
   const config = client.config
   const loginPath = config.loginPath
@@ -73,6 +74,9 @@ function AuthBoundaryInner({
     if (isLoading) return
 
     if (mode === 'protected') {
+      // 2FA w toku (step-up / enrollment): sesja żyje — NIE wysyłamy na login,
+      // konsument pokazuje modal z kodem / przekierowuje na konfigurację 2FA.
+      if (mfaPending) return
       if (!user) {
         // Brak sesji — paczka idzie na loginPath. Jeśli config nie ma loginPath,
         // konsument MUSI obsłużyć sytuację sam (np. przez własny redirect w fallback).
@@ -88,11 +92,21 @@ function AuthBoundaryInner({
     }
 
     // mode === 'guest'
-    if (user) {
+    if (user && !mfaPending) {
       // Zalogowany na publicznej stronie → home.
       client.redirectTo(homePath)
     }
-  }, [isLoading, user, hasRequiredRoles, mode, loginPath, homePath, forbiddenPath, client])
+  }, [
+    isLoading,
+    user,
+    hasRequiredRoles,
+    mode,
+    loginPath,
+    homePath,
+    forbiddenPath,
+    client,
+    mfaPending,
+  ])
 
   if (isLoading) return <>{fallback}</>
 

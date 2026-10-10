@@ -246,6 +246,10 @@ createAuthClient({
   // redirect na forbiddenPath + emit 'forbidden'. Dla paneli admin-only.
   requireRoles?: string[],               // user musi mieć WSZYSTKIE (AND)
   requireAnyRole?: string[],             // user musi mieć PRZYNAJMNIEJ JEDNĄ (OR)
+
+  deviceFingerprint?: boolean,           // default true (2.2+). Nagłówek X-Device-Fp + `device`
+                                         // w loginie / refreshu / 2FA. Backend MUSI dopuszczać
+                                         // X-Device-Fp w CORS (allow_headers).
 })
 ```
 
@@ -389,6 +393,12 @@ authClient.redirectTo('/path') // redirect przez paczkę (respektuje pathname gu
 authClient.isAuthenticated() // sync getter z cache
 authClient.getCachedUser() // sync getter z cache
 authClient.isSessionExpired() // sync getter — true gdy ostatnia sesja umarła
+authClient.verifyMfa({ mfaToken, code | recoveryCode, rememberDevice }) // POST /api/login/mfa
+authClient.stepUpMfa({ code | recoveryCode, rememberDevice }) // POST /api/session/mfa
+authClient.requestMfaEnrollment({ password }) // POST /api/mfa/enrollment/request → URL (hasło wymagane)
+authClient.startMfaEnrollment(url?) // redirect na stronę konfiguracji 2FA
+authClient.confirmMfaEnrollment({ enrollmentToken, code }) // POST /api/mfa/enrollment/confirm → { recoveryCodes, returnUrl, session }
+authClient.getMfaState() / isMfaStepUpRequired() / resetMfa()
 
 authClient.on('login', (tokens) => {})
 authClient.on('logout', () => {})
@@ -398,9 +408,90 @@ authClient.on('forbidden', ({ requiredRoles, userRoles, mode }) => {})
 authClient.on('login-error', (err) => {})    // np. toast.error po fail login
 authClient.on('logout-error', (err) => {})   // np. toast.error po fail logout
 authClient.on('refresh-error', (err) => {})  // np. analytics / monitoring
+authClient.on('mfa-required', (state) => {})
+authClient.on('mfa-step-up-required', () => {})            // pokaż modal z kodem
+authClient.on('mfa-enrollment-required', ({ enrollmentUrl }) => {})
+authClient.on('mfa-state-changed', (state) => {})
 ```
 
 Error eventy lecą równolegle do `throw` z metod — czyli `client.login()` i tak rzuca, ale dodatkowo emit pozwala konsumentowi obsłużyć błąd deklaratywnie (toast w jednym miejscu zamiast try/catch w każdym komponencie).
+
+## 2FA (TOTP) i fingerprint urządzenia (2.2+)
+
+Wszystko jest **addytywne**: backend bez pola `code` w błędach = zachowanie jak w 2.1.
+
+### Logowanie z kodem
+
+```tsx
+import {
+  MfaRequiredError,
+  MfaEnrollmentRequiredError,
+  TooManyAttemptsError,
+} from '@musikhood-dev/auth-client'
+import { useAuth, useMfa } from '@musikhood-dev/auth-client/react'
+
+function LoginPage() {
+  const { login } = useAuth()
+  const mfa = useMfa() // { stage: 'idle' | 'code' | 'step-up' | 'enrollment', mfaToken, enrollmentUrl, verify, stepUp, ... }
+
+  const onSubmit = async (username: string, password: string) => {
+    try {
+      await login({ username, password })
+    } catch (e) {
+      if (e instanceof MfaRequiredError) return // mfa.stage === 'code' → pokaż pole kodu
+      if (e instanceof MfaEnrollmentRequiredError)
+        return mfa.startEnrollment(e.enrollmentUrl ?? undefined)
+      if (e instanceof TooManyAttemptsError) return showError(`Spróbuj za ${e.retryAfter ?? 60} s`)
+      throw e
+    }
+  }
+
+  // stage 'code': kod TOTP albo zapasowy; rememberDevice = 30 dni bez kodu na tym urządzeniu
+  const onCode = (code: string) => mfa.verify({ code, rememberDevice: true })
+  const onRecovery = (recoveryCode: string) => mfa.verify({ recoveryCode })
+}
+```
+
+Vue: `useMfa()` z `@musikhood-dev/auth-client/vue` — te same pola jako `ComputedRef`.
+
+| Odpowiedź backendu                                     | Błąd / zdarzenie                                                                                                                                                               |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 401 `mfa_required` (login)                             | `MfaRequiredError { mfaToken, methods }` (podklasa `InvalidCredentialsError`), stan `code`, event `mfa-required`                                                               |
+| 403 `mfa_enrollment_required` (login)                  | `MfaEnrollmentRequiredError { enrollmentUrl }` (podklasa `LoginForbiddenError`) — link gotowy, hasło właśnie zweryfikowane                                                     |
+| 403 `mfa_enrollment_required` (dowolny request, `/me`) | event `mfa-enrollment-required { enrollmentUrl: null }`, stan `enrollment` — poproś o hasło → `requestMfaEnrollment({ password })`                                             |
+| 401 `mfa_invalid_code`                                 | `MfaInvalidCodeError` (`reason: 'invalid'`, można ponowić)                                                                                                                     |
+| 401 `mfa_code_reused`                                  | `MfaInvalidCodeError` (`reason: 'reused'`) — kod poprawny, ale już użyty; poczekaj na następny w aplikacji                                                                     |
+| 401 `mfa_token_expired`                                | `MfaTokenExpiredError` (zacznij login od nowa)                                                                                                                                 |
+| 429 `too_many_attempts`                                | `TooManyAttemptsError { retryAfter }` (nagłówek `Retry-After`)                                                                                                                 |
+| 403 `mfa_step_up` (dowolny request, `/me`)             | event `mfa-step-up-required`, stan `step-up`, `me()` rzuca `MfaStepUpRequiredError` — **bez** redirectu na login, bez `panel-access-denied`                                    |
+| 401 `device_mismatch_recheck`                          | zwykły refresh (pełna weryfikacja urządzenia na serwerze) i retry; w trybie `enforce` serwer zwraca go też, gdy brak nagłówka `X-Device-Fp` przy sesji związanej z urządzeniem |
+| refresh 401 `device_mismatch`                          | `DeviceMismatchError` (podklasa `SessionExpiredError`) — jak wygaśnięcie sesji                                                                                                 |
+
+### Step-up
+
+Panel może wymagać 2FA od sesji zalogowanej bez kodu. Paczka emituje `mfa-step-up-required`;
+pokaż globalny modal i wywołaj `mfa.stepUp({ code })` (albo `client.stepUpMfa`). `<AuthBoundary>`
+nie przekierowuje na login i nie zapętla `/me` w tym stanie; po sukcesie `/me` odświeża się samo.
+
+### Konfiguracja 2FA (enrollment)
+
+`client.requestMfaEnrollment({ password })` zwraca jednorazowy link do strony konfiguracji — **wymaga aktualnego
+hasła** (skradzione ciasteczko nie może podpiąć 2FA atakującego). Błędy: `InvalidCredentialsError`,
+`MfaAlreadyEnabledError` (409), `TooManyAttemptsError`. `client.startMfaEnrollment(url?)` przekierowuje (pełna
+nawigacja) na podany link albo na link z `MfaEnrollmentRequiredError` loginu. Strona konfiguracji jest po stronie auth-panelu.
+
+`client.confirmMfaEnrollment({ enrollmentToken, code })` (strona konfiguracji) wysyła fingerprint urządzenia i zwraca
+`{ recoveryCodes, returnUrl, session }`. `session != null` = auth-server od razu zalogował usera z 2FA
+(`amr: [pwd, otp]`, cookies ustawione, event `login`) — po ekranie kodów wystarczy przejść na `returnUrl`, bez
+step-upu. `session === null` = link wydany przez backend konsumenta (auth-client-bundle) albo starszy auth-server —
+user loguje się ponownie na swoim panelu.
+
+### Fingerprint urządzenia
+
+`core/device.ts` zbiera komponenty (przeglądarka + major, OS, platforma, CPU, pamięć, WebGL, strefa,
+języki, ekran, canvas) bez zewnętrznych bibliotek; hash SHA-256 z kanonicznego JSON (zgodny z serwerem —
+wspólny wektor testowy). SSR / brak WebCrypto → brak fingerprintu. Wynik cache'owany na czas życia strony.
+`deviceFingerprint: false` wyłącza nagłówek i pole `device` (requesty jak w 2.1).
 
 ## Wsparcie
 

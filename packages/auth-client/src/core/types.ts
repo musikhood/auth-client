@@ -18,6 +18,70 @@ export type LoginCredentials = {
   password: string
 }
 
+// ---- 2FA (2.2.0) ----
+
+export type MfaVerifyInput = {
+  // mfa_token z MfaRequiredError
+  mfaToken: string
+  // 6-cyfrowy kod TOTP — albo recoveryCode
+  code?: string
+  // kod zapasowy xxxxx-xxxxx
+  recoveryCode?: string
+  // zapamiętaj urządzenie na 30 dni (wymaga fingerprintu — config.deviceFingerprint)
+  rememberDevice?: boolean
+}
+
+export type MfaStepUpInput = {
+  code?: string
+  recoveryCode?: string
+  rememberDevice?: boolean
+}
+
+// Stan 2FA trzymany w kliencie — adaptery (useMfa) renderują z niego UI.
+//   idle       — nic nie wymaga 2FA,
+//   code       — login czeka na kod (mfaToken z 401 mfa_required),
+//   step-up    — sesja żyje, ale panel wymaga potwierdzenia kodem (403 mfa_step_up),
+//   enrollment — panel wymaga 2FA, user musi je skonfigurować (enrollmentUrl).
+export type MfaStage = 'idle' | 'code' | 'step-up' | 'enrollment'
+
+export type MfaState = {
+  stage: MfaStage
+  mfaToken: string | null
+  methods: string[]
+  enrollmentUrl: string | null
+}
+
+// Link konfiguracji 2FA dla zalogowanego usera wymaga aktualnego hasła —
+// sama sesja (ciasteczko) nie wystarcza.
+export type MfaEnrollmentRequestInput = {
+  password: string
+}
+
+// Potwierdzenie konfiguracji 2FA (strona /setup-2fa) — autoryzacja wyłącznie
+// enrollment_token z linku.
+export type MfaEnrollmentConfirmInput = {
+  enrollmentToken: string
+  // pierwszy 6-cyfrowy kod z aplikacji
+  code: string
+}
+
+// Wynik potwierdzenia. `session` = auth-server od razu zalogował usera z 2FA
+// (link z loginu / requestMfaEnrollment przez auth-client): cookies ustawione,
+// event 'login' wyemitowany. null = link wydany backend-clientowi (bundle) albo
+// stary auth-server — user loguje się ponownie na swoim panelu.
+export type MfaEnrollmentConfirmResult = {
+  recoveryCodes: string[]
+  returnUrl: string
+  session: TokenResponse | null
+}
+
+// 403 `mfa_enrollment_required` z bramki per-request NIE niesie linku (null):
+// UI prosi o hasło i woła requestMfaEnrollment({ password }). Link jest tylko
+// w MfaEnrollmentRequiredError z loginu (hasło właśnie zweryfikowane).
+export type MfaEnrollmentRequiredPayload = {
+  enrollmentUrl: string | null
+}
+
 export type TokenResponse = {
   token: string
   refresh_token: string
@@ -72,6 +136,13 @@ export type AuthClientConfig = {
   // Default: false (opt-in).
   broadcastSession?: boolean
 
+  // Fingerprint urządzenia (2FA / wiązanie sesji). Default: true.
+  //   - nagłówek `X-Device-Fp` (SHA-256 komponentów) na każdym requeście,
+  //   - `device` (komponenty) w body loginu, refreshu, verifyMfa i stepUpMfa.
+  // Wymaga, by backend (CORS) dopuszczał nagłówek `X-Device-Fp`. SSR / brak
+  // WebCrypto → brak fingerprintu (requesty idą jak w 2.1).
+  deviceFingerprint?: boolean
+
   // Niewykorzystane wewnętrznie (klient używa axios), trzymane dla zgodności.
   fetch?: typeof fetch
 }
@@ -96,6 +167,15 @@ export type AuthEvents = {
   // innych zakładek. Adaptery używają tego do zatrzymania pollingu i pokazania
   // ekranu "brak dostępu" / login bez zapętlania.
   'panel-access-denied': void
+  // 2FA (2.2.0):
+  //  - 'mfa-required'            — login czeka na kod (stan 'code'),
+  //  - 'mfa-step-up-required'    — 403 mfa_step_up: pokaż modal z kodem (bez redirectu na login),
+  //  - 'mfa-enrollment-required' — 403 mfa_enrollment_required: przekieruj na enrollmentUrl,
+  //  - 'mfa-state-changed'       — każda zmiana MfaState (dla adapterów).
+  'mfa-required': MfaState
+  'mfa-step-up-required': void
+  'mfa-enrollment-required': MfaEnrollmentRequiredPayload
+  'mfa-state-changed': MfaState
   // Error eventy — emitowane gdy odpowiednia metoda (login/logout/refresh) rzuca.
   // Konsument może podłączyć listener i np. pokazać toast bez try/catch w komponencie.
   // Uwaga: błąd JEST nadal rzucany z metody — eventy to dodatkowa droga, nie zastępują.

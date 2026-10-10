@@ -6,4 +6,5 @@
 export { AuthProvider, type AuthProviderProps } from './react/AuthProvider.js'
 export { AuthBoundary, type AuthBoundaryProps } from './react/AuthBoundary.js'
 export { useAuth } from './react/useAuth.js'
+export { useMfa, type UseMfaVerifyInput } from './react/useMfa.js'
 export { ME_QUERY_KEY } from './react/context.js'
