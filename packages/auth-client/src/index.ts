@@ -31,6 +31,7 @@ export {
   PanelAccessDeniedError,
   SessionExpiredError,
   TooManyAttemptsError,
+  isAuthErrorNamed,
 } from './core/errors.js'
 export type { MfaInvalidCodeReason } from './core/errors.js'
 export type {

@@ -1,6 +1,6 @@
 {
   "name": "@musikhood-dev/auth-client",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Auth client for browser apps. Cookies + automatic refresh + React and Vue 3 adapters built on TanStack Query.",
   "license": "MIT",
   "author": "Musikhood",
@@ -45,8 +45,12 @@
     },
     "./package.json": "./package.json"
   },
+  "bin": {
+    "auth-client": "./dist/cli.mjs"
+  },
   "files": [
     "dist",
+    "templates",
     "README.md",
     "LICENSE"
   ],
@@ -55,9 +59,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "rm -rf dist && tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.templates.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"

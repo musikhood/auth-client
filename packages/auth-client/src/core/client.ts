@@ -270,12 +270,22 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
     if (changed) emitter.emit('user-changed', user)
   }
 
+  // A dead session ends any pending 2FA stage (step-up / enrollment / code) —
+  // otherwise global MFA dialogs stay open over the login page until reload.
+  // Also covers cross-tab logout / unauthorized (broadcast re-emits these events).
+  // 403 mfa_step_up / mfa_enrollment_required do NOT emit these events.
+  const resetMfa = () => {
+    if (mfaState.stage !== 'idle') setMfaState(IDLE_MFA)
+  }
+
   emitter.on('unauthorized', () => {
     cachedUser = null
     sessionState = 'expired'
+    resetMfa()
   })
   emitter.on('logout', () => {
     sessionState = 'expired'
+    resetMfa()
   })
   emitter.on('login', () => {
     // Udany login / verifyMfa / stepUpMfa (także z innej zakładki) kończy każdy etap 2FA.
@@ -479,7 +489,7 @@ export function createAuthClient(config: AuthClientConfig): AuthClient {
     },
 
     resetMfa() {
-      if (mfaState.stage !== 'idle') setMfaState(IDLE_MFA)
+      resetMfa()
     },
 
     device,

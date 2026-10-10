@@ -409,3 +409,89 @@ describe('/me i interceptor — step-up / enrollment / device', () => {
     expect(client.getMfaState().stage).toBe('idle')
   })
 })
+
+describe('reset stanu 2FA przy końcu sesji', () => {
+  const STEP_UP = { status: 403, body: { code: 'mfa_step_up' } }
+  const ENROLL = { status: 403, body: { code: 'mfa_enrollment_required' } }
+
+  it.each([
+    ['step-up', STEP_UP],
+    ['enrollment', ENROLL],
+  ])('%s → logout() → idle (event mfa-state-changed)', async (stage, response) => {
+    state.meResponse = response
+    const client = newClient()
+    await client.me().catch(() => {})
+    expect(client.getMfaState().stage).toBe(stage)
+    const onState = vi.fn()
+    client.on('mfa-state-changed', onState)
+
+    await client.logout({ redirect: false })
+
+    expect(client.getMfaState()).toEqual({
+      stage: 'idle',
+      mfaToken: null,
+      methods: [],
+      enrollmentUrl: null,
+    })
+    expect(onState).toHaveBeenCalledWith(expect.objectContaining({ stage: 'idle' }))
+  })
+
+  it('logout z błędem serwera też resetuje stan', async () => {
+    state.meResponse = STEP_UP
+    state.logoutResponse = { status: 500, body: { error: 'x' } }
+    const client = newClient()
+    await client.me().catch(() => {})
+
+    await client.logout({ redirect: false }).catch(() => {})
+
+    expect(client.getMfaState().stage).toBe('idle')
+  })
+
+  it('step-up → refresh fail (unauthorized) → idle', async () => {
+    state.meResponse = STEP_UP
+    const client = newClient()
+    await client.me().catch(() => {})
+    expect(client.getMfaState().stage).toBe('step-up')
+
+    state.meResponse = { status: 401, body: { error: 'expired' } }
+    state.refreshResponse = { status: 401, body: { error: 'expired' } }
+    await client.me().catch(() => {})
+
+    expect(client.getMfaState().stage).toBe('idle')
+  })
+
+  it('stage code (login) → zły kod nie resetuje, logout resetuje', async () => {
+    state.loginResponse = MFA_REQUIRED
+    state.loginMfaResponse = { status: 401, body: { code: 'mfa_invalid_code', error: 'x' } }
+    const client = newClient()
+    await client.login({ username: 'x', password: 'y' }).catch(() => {})
+    await client.verifyMfa({ mfaToken: 'mfa-tok', code: '000000' }).catch(() => {})
+    expect(client.getMfaState()).toMatchObject({ stage: 'code', mfaToken: 'mfa-tok' })
+
+    await client.logout({ redirect: false })
+    expect(client.getMfaState().stage).toBe('idle')
+  })
+
+  it('kolejne 403 mfa_step_up nie resetują stanu (bez eventu logout/unauthorized)', async () => {
+    state.meResponse = STEP_UP
+    const client = newClient()
+    const onUnauthorized = vi.fn()
+    client.on('unauthorized', onUnauthorized)
+    await client.me().catch(() => {})
+    await client.me().catch(() => {})
+    expect(client.getMfaState().stage).toBe('step-up')
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  it('logout w innej zakładce (broadcast) → idle', async () => {
+    state.meResponse = STEP_UP
+    const tabA = createAuthClient({ baseUrl: BASE_URL, broadcastSession: true })
+    const tabB = createAuthClient({ baseUrl: BASE_URL, broadcastSession: true })
+    await tabB.me().catch(() => {})
+    expect(tabB.getMfaState().stage).toBe('step-up')
+
+    await tabA.logout({ redirect: false })
+
+    await vi.waitFor(() => expect(tabB.getMfaState().stage).toBe('idle'))
+  })
+})

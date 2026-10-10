@@ -1,0 +1,16 @@
+{
+  // Type-checks the template behaviour test together with the templates it imports
+  // (outside src/, so not covered by tsconfig.json's rootDir). The full generated
+  // projects are type-checked by src/cli/templates.typecheck.test.ts.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["vitest/globals"],
+    "paths": {
+      "@@/lib/*": ["./templates/shared/lib/*"],
+      "@musikhood-dev/auth-client": ["./src/index.ts"]
+    }
+  },
+  "include": ["src/cli/templates.behavior.test.tsx"]
+}
