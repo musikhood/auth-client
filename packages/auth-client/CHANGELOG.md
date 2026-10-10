@@ -4,6 +4,35 @@ Wszystkie istotne zmiany w `@musikhood-dev/auth-client`.
 
 Format luźno wg [Keep a Changelog](https://keepachangelog.com/); wersjonowanie semver.
 
+## [2.3.0]
+
+Minor, wstecznie zgodny (czysto addytywny — aplikacje na 2.2.1 działają bez zmian).
+
+### Added — `npx @musikhood-dev/auth-client init`
+
+- **CLI `init`** (bin `auth-client`, czysty Node 18+, bez sieci i bez rejestru shadcn — działa z prywatnego
+  rejestru npm): wykrywa React Router 7 / Vue 3, katalog aplikacji (`app/` / `src/`), alias importów z
+  `tsconfig` (`~/`, `@/`; brak aliasu = ścieżki względne), shadcn/ui (`components.json` + `button`, `dialog`,
+  `input`, `label`, `checkbox`) i `sonner` / `vue-sonner`. Generuje:
+  - `lib/auth.ts` — `createAuthClient` (`VITE_API_BASE_URL`, `loginPath`, `homePath`, `broadcastSession`) +
+    listener `login-error`, który pomija błędy pokazywane inline (2FA, limit prób, wygasła sesja, złe hasło),
+    a resztę przekazuje do `reportAuthError` (toast, gdy wykryto `sonner` / `vue-sonner`; inaczej oznaczone
+    miejsce do podpięcia),
+  - `lib/mfa.ts` — teksty, `formatRetryAfter`, `mfaErrorMessage`, `loginErrorMessage`, `isAuthError(err, 'Name')`
+    (typowany guard po nazwie — odporny na zduplikowane klasy błędów między entry),
+  - komponenty 2FA: formularz kodu (TOTP / kod zapasowy; kod zapasowy ukrywa „Zapamiętaj to urządzenie” i zawsze
+    wysyła `rememberDevice: false`), globalne dialogi step-up i wymaganej konfiguracji 2FA (nie do zamknięcia,
+    alternatywa „Wyloguj się”), `AuthMfaDialogs` (oba dialogi jednym komponentem), formularz logowania z krokiem
+    kodu; React: wariant shadcn/ui albo czysty HTML, Vue: SFC bez zależności UI,
+  - React Router 7: `routes/login/login.tsx` (tylko gdy nie istnieje — nigdy nie nadpisywany),
+  - `VITE_API_BASE_URL=` w `.env.example` (bez duplikowania klucza).
+- Flagi: `--dry-run`, `--force`, `--cwd`, `--framework react|vue`, `--yes`, `--help`. Istniejące pliki są
+  pomijane (bez `--force`); drugie uruchomienie niczego nie zmienia. Na koniec CLI wypisuje 1–2 kroki ręczne
+  z gotowym kodem (`AuthProvider` + `<AuthMfaDialogs />` w roocie / `createAuth` + `AuthMfaDialogs.vue`) i ostrzega,
+  gdy istniejący `lib/auth.ts` / `lib/mfa.ts` nie ma eksportów, których używają wygenerowane komponenty.
+- Szablony są w paczce (`templates/`), wygenerowane pliki są typowane i sprawdzane w testach (`tsc` / `vue-tsc`).
+- `isAuthErrorNamed(error, name)` eksportowany z głównego entry.
+
 ## [2.2.1]
 
 Patch, wstecznie zgodny.

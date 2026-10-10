@@ -32,5 +32,12 @@ export default [
     },
   },
   ...vue.configs['flat/recommended'],
+  {
+    // <script setup lang="ts"> in SFCs (init templates) — parse with the TS parser.
+    files: ['**/*.vue'],
+    languageOptions: {
+      parserOptions: { parser: tsParser, sourceType: 'module' },
+    },
+  },
   prettier,
 ]

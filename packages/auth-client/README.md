@@ -3,7 +3,63 @@
 [![npm](https://img.shields.io/npm/v/@musikhood-dev/auth-client.svg)](https://www.npmjs.com/package/@musikhood-dev/auth-client)
 [![license](https://img.shields.io/npm/l/@musikhood-dev/auth-client.svg)](./LICENSE)
 
-Wspólny klient auth dla frontendów React i Vue 3.
+Wspólny klient auth dla frontendów React i Vue 3 (logowanie, refresh, 2FA, role).
+
+## Quick start (5 minut)
+
+Nowy panel frontendowy podpięty pod auth — od zera do logowania z 2FA:
+
+1. **Admin** tworzy panel w auth-panelu (Origin frontu, polityka 2FA `off` / `optional` / `required`) i nadaje
+   userom dostęp.
+2. **Backend** panelu: bundle — patrz
+   [musikhood/auth-client-bundle INTEGRATION.md](https://github.com/musikhood/auth-client-bundle/blob/main/INTEGRATION.md)
+   (checklista integracji).
+3. **Front** — instalacja:
+
+   ```bash
+   npm i @musikhood-dev/auth-client @tanstack/react-query   # Vue: @tanstack/vue-query
+   ```
+
+4. Generator (offline, działa z prywatnego rejestru; `--dry-run` pokazuje plan bez zapisu):
+
+   ```bash
+   npx @musikhood-dev/auth-client init
+   ```
+
+   Tworzy `lib/auth.ts`, `lib/mfa.ts`, komponenty 2FA, formularz / stronę logowania i `VITE_API_BASE_URL=`
+   w `.env.example`. Istniejących plików nie rusza (`--force` nadpisuje).
+
+5. Dwie linie w roocie — React Router 7 (`app/root.tsx`, w `App()` z `useNavigate`):
+
+   ```tsx
+   <AuthProvider client={authClient} navigate={(path) => navigate(path, { replace: true })}>
+     <Outlet />
+     <AuthMfaDialogs />
+   </AuthProvider>
+   ```
+
+   Vue 3: `app.use(VueQueryPlugin)` + `app.use(createAuth(authClient))` w `main.ts` i `<AuthMfaDialogs />`
+   w `App.vue`. Pełny kod (z importami) wypisuje `init` na końcu.
+
+6. `.env`: `VITE_API_BASE_URL=https://api.example.com`.
+7. React Router 7: zarejestruj `/login` w `app/routes.ts` — `route('login', './routes/login/login.tsx')`
+   (jeśli `init` to zgłosi). Trasy chronione owiń w `<AuthBoundary>` (np. w layoucie).
+8. `npm run dev` → logowanie hasłem, krok kodu 2FA, step-up i wymuszona konfiguracja 2FA działają.
+
+## Jak działa
+
+- `lib/auth.ts` tworzy **jednego** klienta (`createAuthClient`). Tokeny są tylko w ciasteczkach HttpOnly;
+  401 → automatyczny refresh i retry; `broadcastSession` synchronizuje logout / login między kartami.
+- `<AuthProvider>` podpina klienta (i nawigację routera) do Reacta; w Vue robi to plugin `createAuth`.
+- `<AuthBoundary>` sam przekierowuje: niezalogowany → `loginPath`, zalogowany na `/login` → `homePath`.
+- 2FA to stan klienta (`useMfa().stage`): login z 401 `mfa_required` → `code` (formularz kodu w
+  `LoginForm`), 403 `mfa_step_up` z dowolnego requestu → `step-up`, 403 `mfa_enrollment_required` →
+  `enrollment` (dialogi z `<AuthMfaDialogs />` — hasło → strona konfiguracji 2FA na auth-serverze).
+- Błędy pokazywane inline (złe hasło, kod, limit prób) są pomijane przez globalny listener `login-error` w
+  `lib/auth.ts`; resztę dostaje `reportAuthError` — tam podpinasz toast aplikacji.
+- Wygenerowane pliki są **twoje** — edytuj je dowolnie; paczka nie wymaga ich do działania.
+
+## Co daje paczka
 
 - **Konfiguracja przez ścieżki**: `loginPath`, `homePath`, `forbiddenPath`. Paczka sama redirectuje.
 - **Jeden hook**: `useAuth()` daje `user`, `login`, `logout`.
@@ -14,6 +70,8 @@ Wspólny klient auth dla frontendów React i Vue 3.
 - **Role-based access**: `requireRoles` / `requireAnyRole` na `<AuthBoundary>` + `client.assertRoles()`.
 
 ## Instalacja
+
+Najszybciej: [Quick start](#quick-start-5-minut) (`npx @musikhood-dev/auth-client init`). Ręcznie:
 
 ```bash
 npm i @musikhood-dev/auth-client
@@ -419,6 +477,13 @@ Error eventy lecą równolegle do `throw` z metod — czyli `client.login()` i t
 ## 2FA (TOTP) i fingerprint urządzenia (2.2+)
 
 Wszystko jest **addytywne**: backend bez pola `code` w błędach = zachowanie jak w 2.1.
+
+Gotowe komponenty (formularz kodu, dialogi step-up / wymaganej konfiguracji, logowanie z krokiem kodu) generuje
+`npx @musikhood-dev/auth-client init` — poniżej API, na którym są zbudowane.
+
+Błędy rozpoznawaj po nazwie: `isAuthErrorNamed(err, 'MfaRequiredError')` (2.3+). Adaptery `/react` i `/vue` są
+osobnymi entry bundla z własnymi kopiami klas błędów, więc `instanceof` między entry bywa fałszywy (klient i klasy
+błędów importowane z głównego entry — działa).
 
 ### Logowanie z kodem
 
