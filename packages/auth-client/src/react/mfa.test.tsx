@@ -107,4 +107,44 @@ describe('useMfa (React)', () => {
     })
     expect(state.captured.loginMfa).toBeUndefined()
   })
+
+  it('step-up → logout() → stage idle (dialogi znikają bez odświeżenia)', async () => {
+    state.meResponse = { status: 403, body: { code: 'mfa_step_up' } }
+    const client = createAuthClient({ baseUrl: BASE_URL })
+    const { result } = renderHook(() => useMfa(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <AuthProvider client={client}>{children}</AuthProvider>
+      ),
+    })
+    await act(async () => {
+      await client.me().catch(() => {})
+    })
+    await waitFor(() => expect(result.current.stage).toBe('step-up'))
+
+    await act(async () => {
+      await client.logout({ redirect: false })
+    })
+    await waitFor(() => expect(result.current.stage).toBe('idle'))
+  })
+
+  it('enrollment → refresh fail → stage idle', async () => {
+    state.meResponse = { status: 403, body: { code: 'mfa_enrollment_required' } }
+    const client = createAuthClient({ baseUrl: BASE_URL })
+    const { result } = renderHook(() => useMfa(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <AuthProvider client={client}>{children}</AuthProvider>
+      ),
+    })
+    await act(async () => {
+      await client.me().catch(() => {})
+    })
+    await waitFor(() => expect(result.current.stage).toBe('enrollment'))
+
+    state.meResponse = { status: 401, body: { error: 'expired' } }
+    state.refreshResponse = { status: 401, body: { error: 'expired' } }
+    await act(async () => {
+      await client.me().catch(() => {})
+    })
+    await waitFor(() => expect(result.current.stage).toBe('idle'))
+  })
 })

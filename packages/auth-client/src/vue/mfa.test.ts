@@ -53,4 +53,26 @@ describe('useMfa (Vue)', () => {
     await mfa().stepUp({ code: '123123' })
     expect(mfa().stage.value).toBe('idle')
   })
+
+  it('step-up → logout() → stage idle', async () => {
+    state.meResponse = { status: 403, body: { code: 'mfa_step_up' } }
+    const { client, mfa } = mountMfa()
+    await client.me().catch(() => {})
+    expect(mfa().stage.value).toBe('step-up')
+
+    await client.logout({ redirect: false })
+    await waitFor(() => expect(mfa().stage.value).toBe('idle'))
+  })
+
+  it('enrollment → refresh fail → stage idle', async () => {
+    state.meResponse = { status: 403, body: { code: 'mfa_enrollment_required' } }
+    const { client, mfa } = mountMfa()
+    await client.me().catch(() => {})
+    expect(mfa().stage.value).toBe('enrollment')
+
+    state.meResponse = { status: 401, body: { error: 'expired' } }
+    state.refreshResponse = { status: 401, body: { error: 'expired' } }
+    await client.me().catch(() => {})
+    await waitFor(() => expect(mfa().stage.value).toBe('idle'))
+  })
 })

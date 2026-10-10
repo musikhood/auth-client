@@ -398,7 +398,7 @@ authClient.stepUpMfa({ code | recoveryCode, rememberDevice }) // POST /api/sessi
 authClient.requestMfaEnrollment({ password }) // POST /api/mfa/enrollment/request → URL (hasło wymagane)
 authClient.startMfaEnrollment(url?) // redirect na stronę konfiguracji 2FA
 authClient.confirmMfaEnrollment({ enrollmentToken, code }) // POST /api/mfa/enrollment/confirm → { recoveryCodes, returnUrl, session }
-authClient.getMfaState() / isMfaStepUpRequired() / resetMfa()
+authClient.getMfaState() / isMfaStepUpRequired() / resetMfa() // stan 2FA wraca do 'idle' sam po logout / unauthorized (od 2.2.1)
 
 authClient.on('login', (tokens) => {})
 authClient.on('logout', () => {})

@@ -4,6 +4,18 @@ Wszystkie istotne zmiany w `@musikhood-dev/auth-client`.
 
 Format luźno wg [Keep a Changelog](https://keepachangelog.com/); wersjonowanie semver.
 
+## [2.2.1]
+
+Patch, wstecznie zgodny.
+
+### Fixed
+
+- Stan 2FA (`getMfaState()` / `useMfa()`: `stage`, `mfaToken`, `enrollmentUrl`) wraca do `idle` przy eventach
+  `logout` (także nieudany request logout) i `unauthorized` (refresh fail) — również z innej zakładki
+  (`broadcastSession`). Wcześniej globalne dialogi step-up / enrollment zostawały nad stroną logowania do
+  odświeżenia (obejście: `mfa.reset()` po logout — można je usunąć). 403 `mfa_step_up` /
+  `mfa_enrollment_required` stanu nie resetują.
+
 ## [2.2.0]
 
 Minor, wstecznie zgodny. Backend bez pola `code` w błędach = zachowanie jak w 2.1.
