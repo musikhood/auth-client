@@ -129,10 +129,10 @@ describe('<AuthBoundary protected>', () => {
   })
 })
 
-// Odtwarza topologię pim_frontend: WSPÓLNY QueryClient na całą apkę + przejście
+// Odtwarza topologię panelu RR7: WSPÓLNY QueryClient na całą apkę + przejście
 // z chronionego boundary (/products) na guest boundary (/login) po 403. Cel:
 // dowieść braku pętli /me i stabilnego lądowania na /login dla usera bez dostępu.
-describe('<AuthBoundary> — 403 panel access denied (topologia pim)', () => {
+describe('<AuthBoundary> — 403 panel access denied (topologia panelu RR7)', () => {
   it('403 na chronionym → skończona liczba /me, redirect na loginPath raz, brak broadcastu', async () => {
     state.meResponse = { status: 403, body: { error: 'Brak dostępu do tego panelu.' } }
     const redirect = vi.fn()

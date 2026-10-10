@@ -22,12 +22,14 @@ import { formatRetryAfter, isAuthError, MFA_TEXTS } from '@@/lib/mfa'
 // Not dismissable; the alternative is logging out. Rendered by <AuthMfaDialogs />.
 export function MfaEnrollmentRequiredDialog() {
   const mfa = useMfa()
-  const { logout, isAuthenticated } = useAuth()
+  const { logout } = useAuth()
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
-  const open = isAuthenticated && mfa.stage === 'enrollment' && mfa.enrollmentUrl === null
+  // Gated on the MFA stage alone: it is set only by a 403 on a live session and reset by
+  // auth-client on logout / session end (no `isAuthenticated` needed — works outside <AuthBoundary>).
+  const open = mfa.stage === 'enrollment' && mfa.enrollmentUrl === null
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()

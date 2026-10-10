@@ -119,7 +119,8 @@ export function useAuth() {
   //  1) sessionExpired: wiemy że sesji nie ma → user=null, isLoading=false (BEZ
   //     czekania na disabled useMe).
   //  2) enabled (mode jest 'protected' lub 'guest-checking'): czytamy z meQuery.
-  //  3) Poza boundary (mode === null): user=null, isLoading=false, nic nie robimy.
+  //  3) Poza boundary (mode === null): bez /me — user / isAuthenticated z cache /me
+  //     i klienta, isLoading=false.
   const result = (() => {
     if (sessionExpired) {
       return {
@@ -140,15 +141,18 @@ export function useAuth() {
         error: meQuery.error ?? new Error('No access to this panel'),
       }
     }
-    if (mfaBlocked && (mode === 'protected' || mode === 'guest-checking')) {
-      // Sesja żyje, czeka na kod (step-up) albo konfigurację 2FA. Zostawiamy
-      // ostatnio znanego usera (jeśli był) — aplikacja może dalej renderować pod
-      // modalem; AuthBoundary NIE redirectuje na login w tym stanie.
+    if (mfaBlocked) {
+      // Sesja żyje (403 z kodem dostaje tylko zalogowany), czeka na kod (step-up)
+      // albo konfigurację 2FA — w boundary i poza nim. isAuthenticated = true nawet
+      // bez znanego usera (świeża sesja SSO bez drugiego składnika), żeby globalne
+      // dialogi 2FA (poza <AuthBoundary>) się otwierały. Zostawiamy ostatnio
+      // znanego usera — aplikacja może dalej renderować pod modalem; AuthBoundary
+      // NIE redirectuje na login w tym stanie.
       const cached = meQuery.data ?? client.getCachedUser()
       return {
         user: cached ?? null,
         isLoading: false,
-        isAuthenticated: cached != null,
+        isAuthenticated: true,
         error: meQuery.error,
       }
     }
@@ -177,7 +181,11 @@ export function useAuth() {
         error: meQuery.error,
       }
     }
-    return { user: null, isLoading: false, isAuthenticated: false, error: null }
+    // Poza boundary (mode null): /me nie jest wołane, ale user / isAuthenticated
+    // odzwierciedlają sesję klienta — cache /me (wspólny QueryClient) albo usera
+    // z klienta. Globalne komponenty widzą tę samą sesję co boundary.
+    const known = meQuery.isError ? null : (meQuery.data ?? client.getCachedUser())
+    return { user: known ?? null, isLoading: false, isAuthenticated: known != null, error: null }
   })()
 
   return {

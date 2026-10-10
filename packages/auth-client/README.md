@@ -7,29 +7,41 @@ Wspólny klient auth dla frontendów React i Vue 3 (logowanie, refresh, 2FA, rol
 
 ## Quick start (5 minut)
 
-Nowy panel frontendowy podpięty pod auth — od zera do logowania z 2FA:
+> Agent AI podpinający panel: zacznij od [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) (jest też w paczce:
+> `node_modules/@musikhood-dev/auth-client/AI_INTEGRATION.md`) — drzewo decyzji, przepisy scalania, pułapki.
 
-1. **Admin** tworzy panel w auth-panelu (Origin frontu, polityka 2FA `off` / `optional` / `required`) i nadaje
-   userom dostęp.
-2. **Backend** panelu: bundle — patrz
-   [musikhood/auth-client-bundle INTEGRATION.md](https://github.com/musikhood/auth-client-bundle/blob/main/INTEGRATION.md)
-   (checklista integracji).
-3. **Front** — instalacja:
+Nowy albo istniejący panel frontendowy podpięty pod auth — logowanie z 2FA:
+
+1. **Admin** tworzy panel w panelu administracyjnym auth servera (Origin frontu, polityka 2FA `off` / `optional` /
+   `required`) i nadaje userom dostęp.
+2. **Skąd front się loguje** — wybierz jedną ścieżkę:
+   - **(a) przez własny backend Symfony z bundlem** — `baseUrl` = adres backendu panelu. Backend:
+     [musikhood/auth-client-bundle INTEGRATION.md](https://github.com/musikhood/auth-client-bundle/blob/main/INTEGRATION.md)
+     (`composer require musikhood/auth-client-bundle:^0.8`, `bin/console auth-client:install`, `auth-client:doctor`).
+   - **(b) bezpośrednio do auth servera, bez własnego backendu** — `baseUrl` = adres auth servera (np.
+     `https://auth.example.com`, dev: `https://auth-dev.example.com`). Origin frontu musi być dopuszczony w CORS
+     auth servera — to zmiana po stronie auth servera.
+3. **Front** — instalacja z wersją wprost (tag `latest` to jeszcze 2.1.0 — bez `init` i bez 2FA):
 
    ```bash
-   npm i @musikhood-dev/auth-client @tanstack/react-query   # Vue: @tanstack/vue-query
+   npm i @musikhood-dev/auth-client@^2.3 @tanstack/react-query   # Vue: @tanstack/vue-query
    ```
 
 4. Generator (offline, działa z prywatnego rejestru; `--dry-run` pokazuje plan bez zapisu):
 
    ```bash
+   npx @musikhood-dev/auth-client init --dry-run
    npx @musikhood-dev/auth-client init
    ```
 
-   Tworzy `lib/auth.ts`, `lib/mfa.ts`, komponenty 2FA, formularz / stronę logowania i `VITE_API_BASE_URL=`
-   w `.env.example`. Istniejących plików nie rusza (`--force` nadpisuje).
+   Tworzy `lib/auth.ts`, `lib/mfa.ts`, komponenty 2FA i formularz / stronę logowania. Wykrywa istniejący projekt:
+   zmienną z adresem API (z `lib/auth.ts` / `.env*`, albo `--env-var NAZWA`), toast faktycznie używany w kodzie
+   (`sonner`, `vue-sonner`, shadcn `use-toast`), shadcn/ui i shadcn-vue, istniejącą stronę `/login` (zamiast
+   `LoginForm` wypisuje przepis scalenia) i istniejący `lib/auth.ts` (wypisuje fragment do wklejenia). Istniejących
+   plików nie rusza (`--force` nadpisuje). Gdy repo ma prettier, formatuje wygenerowane pliki jego konfiguracją.
 
-5. Dwie linie w roocie — React Router 7 (`app/root.tsx`, w `App()` z `useNavigate`):
+5. Wpięcie w roocie — `init` wypisuje tylko kroki, których jeszcze nie ma. React Router 7 (`app/root.tsx`, w `App()`
+   z `useNavigate`):
 
    ```tsx
    <AuthProvider client={authClient} navigate={(path) => navigate(path, { replace: true })}>
@@ -38,13 +50,13 @@ Nowy panel frontendowy podpięty pod auth — od zera do logowania z 2FA:
    </AuthProvider>
    ```
 
-   Vue 3: `app.use(VueQueryPlugin)` + `app.use(createAuth(authClient))` w `main.ts` i `<AuthMfaDialogs />`
-   w `App.vue`. Pełny kod (z importami) wypisuje `init` na końcu.
+   Vue 3: `app.use(VueQueryPlugin)` **przed** `app.use(createAuth(authClient, { navigate }))` w `main.ts` i
+   `<AuthMfaDialogs />` w `App.vue`. Dialogi 2FA mogą być poza `<AuthBoundary>` (od 2.3.1).
 
-6. `.env`: `VITE_API_BASE_URL=https://api.example.com`.
-7. React Router 7: zarejestruj `/login` w `app/routes.ts` — `route('login', './routes/login/login.tsx')`
-   (jeśli `init` to zgłosi). Trasy chronione owiń w `<AuthBoundary>` (np. w layoucie).
-8. `npm run dev` → logowanie hasłem, krok kodu 2FA, step-up i wymuszona konfiguracja 2FA działają.
+6. `.env`: zmienna z adresem API (domyślnie `VITE_API_BASE_URL`; w istniejącym projekcie ta, której już używa).
+7. Trasy chronione owiń w `<AuthBoundary>` (np. w layoucie); `/login` w `<AuthBoundary mode="guest">`.
+8. `npm run dev` → logowanie hasłem, krok kodu 2FA, step-up i wymuszona konfiguracja 2FA działają. Testy ręczne:
+   [`AI_INTEGRATION.md`](./AI_INTEGRATION.md#testy-ręczne-po-wdrożeniu).
 
 ## Jak działa
 
@@ -74,7 +86,7 @@ Nowy panel frontendowy podpięty pod auth — od zera do logowania z 2FA:
 Najszybciej: [Quick start](#quick-start-5-minut) (`npx @musikhood-dev/auth-client init`). Ręcznie:
 
 ```bash
-npm i @musikhood-dev/auth-client
+npm i @musikhood-dev/auth-client@^2.3
 # adapter React:
 npm i @tanstack/react-query
 # adapter Vue:
@@ -242,15 +254,22 @@ app.mount('#app')
 ```vue
 <!-- LoginView.vue -->
 <script setup lang="ts">
+import { ref } from 'vue'
 import { AuthBoundary, useAuth } from '@musikhood-dev/auth-client/vue'
+
 const { login } = useAuth()
+const username = ref('')
+const password = ref('')
+
+// Błędy: login() rzuca (np. InvalidCredentialsError) — 2FA i komunikaty generuje `init`.
+const submit = () => login({ username: username.value, password: password.value }).catch(() => {})
 </script>
 
 <template>
   <AuthBoundary mode="guest">
     <template #fallback><Spinner /></template>
     <template #default>
-      <form @submit.prevent="login({ username, password })">
+      <form @submit.prevent="submit">
         <input v-model="username" />
         <input v-model="password" type="password" />
         <button :disabled="login.isPending.value">Zaloguj</button>
@@ -315,12 +334,12 @@ createAuthClient({
 
 Masz dwa miejsca gdzie możesz wymusić role, do różnych use case'ów:
 
-| Gdzie                                | Kiedy używać                                                               | Co robi przy braku roli                                                                                |
-| ------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `createAuthClient({ requireRoles })` | **Cały panel** wymaga roli (np. auth-panel — tylko ROLE_ADMIN)             | logout + redirect na forbiddenPath + emit `'forbidden'`                                                |
-| `<AuthBoundary requireRoles>`        | **Niektóre route'y** w panelu wymagają roli (np. pim_frontend `/settings`) | redirect na forbiddenPath (bez logout — user pozostaje zalogowany, tylko nie ma dostępu do tej sekcji) |
+| Gdzie                                | Kiedy używać                                                              | Co robi przy braku roli                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `createAuthClient({ requireRoles })` | **Cały panel** wymaga roli (np. panel administracyjny — tylko ROLE_ADMIN) | logout + redirect na forbiddenPath + emit `'forbidden'`                                                |
+| `<AuthBoundary requireRoles>`        | **Niektóre route'y** w panelu wymagają roli (np. `/settings`)             | redirect na forbiddenPath (bez logout — user pozostaje zalogowany, tylko nie ma dostępu do tej sekcji) |
 
-Dla panelu admin-only (auth-panel):
+Dla panelu admin-only (np. panel administracyjny auth servera):
 
 ```ts
 createAuthClient({
@@ -384,6 +403,13 @@ const {
 } = useAuth()
 ```
 
+**Poza `<AuthBoundary>`** (np. globalne dialogi 2FA w `App.vue` / `root.tsx`) `useAuth()` nie woła `/me`, ale od
+2.3.1 `user` / `isAuthenticated` odzwierciedlają sesję klienta: dane z cache `/me` (wspólny QueryClient z
+boundary) albo ostatnio znanego usera. W stanie 2FA `step-up` / `enrollment` `isAuthenticated` jest `true`
+(sesja żyje — 403 z kodem dostaje tylko zalogowany), także gdy usera jeszcze nie znamy (świeża sesja SSO bez
+drugiego składnika). Wcześniej poza boundary było zawsze `false`, więc dialog `isAuthenticated && stage === …`
+nigdy się nie otwierał.
+
 `login` i `logout` to **callable funkcje z dołączonym stanem mutation** — wołasz jak funkcję (`await login(creds)`, `<button onClick={logout}>`) i jednocześnie czytasz `login.isPending`, `login.error`.
 
 ## Cross-tab sync (`broadcastSession`)
@@ -411,14 +437,14 @@ Cała sekcja UI wymaga roli. Brak roli → redirect na `forbiddenPath`:
 Po loginie chcesz natychmiast zweryfikować rolę. `assertRoles` woła /me, sprawdza role, jeśli nie spełniają — **woła logout()** (czyli redirect na `loginPath`) i rzuca `ForbiddenRoleError`:
 
 ```ts
-import { ForbiddenRoleError } from '@musikhood-dev/auth-client'
+import { isAuthErrorNamed } from '@musikhood-dev/auth-client'
 
 try {
   await client.login({ username, password })
   await client.assertRoles(['ROLE_ADMIN'])
   // user zostanie auto-przekierowany na homePath przez <AuthBoundary mode="guest">
 } catch (err) {
-  if (err instanceof ForbiddenRoleError) {
+  if (isAuthErrorNamed(err, 'ForbiddenRoleError')) {
     toast.error('Wymagane uprawnienia administratora')
     // paczka już zrobiła logout + redirect na loginPath
   }
@@ -489,9 +515,9 @@ błędów importowane z głównego entry — działa).
 
 ```tsx
 import {
-  MfaRequiredError,
-  MfaEnrollmentRequiredError,
-  TooManyAttemptsError,
+  isAuthErrorNamed,
+  type MfaEnrollmentRequiredError,
+  type TooManyAttemptsError,
 } from '@musikhood-dev/auth-client'
 import { useAuth, useMfa } from '@musikhood-dev/auth-client/react'
 
@@ -503,10 +529,13 @@ function LoginPage() {
     try {
       await login({ username, password })
     } catch (e) {
-      if (e instanceof MfaRequiredError) return // mfa.stage === 'code' → pokaż pole kodu
-      if (e instanceof MfaEnrollmentRequiredError)
-        return mfa.startEnrollment(e.enrollmentUrl ?? undefined)
-      if (e instanceof TooManyAttemptsError) return showError(`Spróbuj za ${e.retryAfter ?? 60} s`)
+      // Po nazwie, nie instanceof (patrz wyżej). Wygenerowany lib/mfa.ts ma typowany
+      // guard isAuthError(e, 'Name') — zawęża typ bez rzutowania.
+      if (isAuthErrorNamed(e, 'MfaRequiredError')) return // mfa.stage === 'code' → pole kodu
+      if (isAuthErrorNamed(e, 'MfaEnrollmentRequiredError'))
+        return mfa.startEnrollment((e as MfaEnrollmentRequiredError).enrollmentUrl ?? undefined)
+      if (isAuthErrorNamed(e, 'TooManyAttemptsError'))
+        return showError(`Spróbuj za ${(e as TooManyAttemptsError).retryAfter ?? 60} s`)
       throw e
     }
   }
@@ -543,7 +572,7 @@ nie przekierowuje na login i nie zapętla `/me` w tym stanie; po sukcesie `/me` 
 `client.requestMfaEnrollment({ password })` zwraca jednorazowy link do strony konfiguracji — **wymaga aktualnego
 hasła** (skradzione ciasteczko nie może podpiąć 2FA atakującego). Błędy: `InvalidCredentialsError`,
 `MfaAlreadyEnabledError` (409), `TooManyAttemptsError`. `client.startMfaEnrollment(url?)` przekierowuje (pełna
-nawigacja) na podany link albo na link z `MfaEnrollmentRequiredError` loginu. Strona konfiguracji jest po stronie auth-panelu.
+nawigacja) na podany link albo na link z `MfaEnrollmentRequiredError` loginu. Strona konfiguracji jest po stronie auth servera (jego panelu administracyjnego).
 
 `client.confirmMfaEnrollment({ enrollmentToken, code })` (strona konfiguracji) wysyła fingerprint urządzenia i zwraca
 `{ recoveryCodes, returnUrl, session }`. `session != null` = auth-server od razu zalogował usera z 2FA

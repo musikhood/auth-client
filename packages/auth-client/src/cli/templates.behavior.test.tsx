@@ -1,7 +1,11 @@
 // Behaviour of the generated 2FA code form (react-plain template, rendered directly).
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MfaCodeForm } from '../../templates/react-plain/components/auth/mfa-code-form'
+import { MfaStepUpDialog } from '../../templates/react-plain/components/auth/mfa-step-up-dialog'
+import { AuthProvider } from '../react.js'
+import { createAuthClient } from '../core/client.js'
+import { BASE_URL, state } from '../test/server.js'
 import { formatRetryAfter, isAuthError, loginErrorMessage, mfaErrorMessage } from '@@/lib/mfa'
 import {
   InvalidCredentialsError,
@@ -52,6 +56,53 @@ describe('MfaCodeForm (template)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Użyj kodu zapasowego' }))
     fireEvent.click(screen.getByRole('button', { name: 'Użyj kodu z aplikacji' }))
     expect((screen.getByLabelText(REMEMBER) as HTMLInputElement).checked).toBe(false)
+  })
+})
+
+describe('MfaCodeForm (template) — zmiana trybu', () => {
+  const props = { isPending: false, submitLabel: 'Zweryfikuj', onSubmit: () => {} }
+
+  it('błąd poprzedniej próby znika po przełączeniu trybu; nowy błąd rodzica znów widać', () => {
+    const { rerender } = render(<MfaCodeForm {...props} error="Nieprawidłowy kod." />)
+    expect(screen.getByRole('alert').textContent).toBe('Nieprawidłowy kod.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Użyj kodu zapasowego' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // Parent clears the error before a new attempt, then reports the same text again.
+    rerender(<MfaCodeForm {...props} error={null} />)
+    rerender(<MfaCodeForm {...props} error="Nieprawidłowy kod." />)
+    expect(screen.getByRole('alert').textContent).toBe('Nieprawidłowy kod.')
+  })
+
+  it('focus przechodzi na pole nowego trybu', () => {
+    render(<MfaCodeForm {...props} error={null} />)
+    expect(document.activeElement?.id).toBe('mfa-code')
+    fireEvent.click(screen.getByRole('button', { name: 'Użyj kodu zapasowego' }))
+    expect(document.activeElement?.id).toBe('mfa-recovery')
+    fireEvent.click(screen.getByRole('button', { name: 'Użyj kodu z aplikacji' }))
+    expect(document.activeElement?.id).toBe('mfa-code')
+  })
+})
+
+describe('MfaStepUpDialog (template) — poza <AuthBoundary>', () => {
+  it('403 mfa_step_up otwiera dialog bez boundary; logout go zamyka', async () => {
+    state.meResponse = { status: 403, body: { code: 'mfa_step_up' } }
+    const client = createAuthClient({ baseUrl: BASE_URL, loginPath: '/login', redirect: () => {} })
+    render(
+      <AuthProvider client={client}>
+        <MfaStepUpDialog />
+      </AuthProvider>,
+    )
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    await act(async () => {
+      await client.me().catch(() => {})
+    })
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wyloguj się' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })
 

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 
-export type FixtureKind = 'react-shadcn' | 'react-plain' | 'vue'
+export type FixtureKind = 'react-shadcn' | 'react-plain' | 'vue' | 'vue-shadcn'
 
 export function writeFiles(root: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
@@ -85,9 +85,113 @@ export const DialogDescription = (props: HTMLAttributes<HTMLParagraphElement>) =
 `,
 }
 
+// shadcn-vue: one directory per component with an index.ts re-export (SFC stubs).
+const sfc = (template: string, script = '') =>
+  `<script setup lang="ts">\n${script}</script>\n\n<template>\n  ${template}\n</template>\n`
+const SHADCN_VUE_STUBS: Record<string, string> = {
+  'components.json': JSON.stringify(
+    {
+      $schema: 'https://shadcn-vue.com/schema.json',
+      style: 'new-york',
+      typescript: true,
+      aliases: { components: '@/components', utils: '@/lib/utils', ui: '@/components/ui' },
+    },
+    null,
+    2,
+  ),
+  'src/components/ui/button/Button.vue': sfc(
+    '<button><slot /></button>',
+    `defineProps<{ variant?: 'default' | 'outline' | 'link'; size?: 'default' | 'lg' }>()\n`,
+  ),
+  'src/components/ui/button/index.ts': `export { default as Button } from './Button.vue'\n`,
+  'src/components/ui/input/Input.vue': sfc(
+    '<input :value="modelValue" @input="emit(\'update:modelValue\', ($event.target as HTMLInputElement).value)" />',
+    `defineProps<{ modelValue?: string | number }>()\nconst emit = defineEmits<{ (e: 'update:modelValue', value: string | number): void }>()\n`,
+  ),
+  'src/components/ui/input/index.ts': `export { default as Input } from './Input.vue'\n`,
+  'src/components/ui/label/Label.vue': sfc(
+    '<label><slot /></label>',
+    `defineProps<{ for?: string }>()\n`,
+  ),
+  'src/components/ui/label/index.ts': `export { default as Label } from './Label.vue'\n`,
+  'src/components/ui/dialog/Dialog.vue': sfc(
+    '<div v-if="open"><slot /></div>',
+    `defineProps<{ open?: boolean }>()\n`,
+  ),
+  'src/components/ui/dialog/DialogContent.vue': sfc(
+    '<div role="dialog"><slot /><button>X</button></div>',
+    `defineEmits<{\n  escapeKeyDown: [event: KeyboardEvent]\n  pointerDownOutside: [event: Event]\n  interactOutside: [event: Event]\n}>()\n`,
+  ),
+  'src/components/ui/dialog/DialogHeader.vue': sfc('<div><slot /></div>'),
+  'src/components/ui/dialog/DialogTitle.vue': sfc('<h2><slot /></h2>'),
+  'src/components/ui/dialog/DialogDescription.vue': sfc('<p><slot /></p>'),
+  'src/components/ui/dialog/index.ts': [
+    'Dialog',
+    'DialogContent',
+    'DialogHeader',
+    'DialogTitle',
+    'DialogDescription',
+  ]
+    .map((name) => `export { default as ${name} } from './${name}.vue'`)
+    .join('\n')
+    .concat('\n'),
+}
+
+// Existing Vue + shadcn-vue app that already logs in (2.1-style auth), modelled on
+// a real Vue panel before the 2FA pilot: VITE_BACKEND_URL, shadcn use-toast, vue-sonner listed but
+// unused, its own LoginView on /login, plugins already installed in main.ts.
+export const EXISTING_VUE_APP: Record<string, string> = {
+  'src/lib/auth.ts': `import { createAuthClient } from '@musikhood-dev/auth-client'
+import { toast } from '@/components/ui/toast/use-toast'
+
+export const authClient = createAuthClient({
+  baseUrl: import.meta.env.VITE_BACKEND_URL,
+  loginPath: '/login',
+  homePath: '/product-list',
+})
+
+authClient.on('login-error', () => {
+  toast({ title: 'Nieprawidłowy email lub hasło', variant: 'destructive' })
+})
+`,
+  'src/components/ui/toast/use-toast.ts': `export function toast(props: { title?: string; description?: string; variant?: 'default' | 'destructive' }): void {\n  void props\n}\n`,
+  'src/components/ui/toast/index.ts': `export { toast } from './use-toast'\n`,
+  'src/components/auth/LoginView.vue': sfc('<form />'),
+  'src/router/index.ts': `import { createRouter, createWebHistory } from 'vue-router'
+import LoginView from '@/components/auth/LoginView.vue'
+
+export default createRouter({
+  history: createWebHistory(),
+  routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: LoginView,
+    },
+  ],
+})
+`,
+  'src/main.ts': `import { createApp } from 'vue'
+import { VueQueryPlugin } from '@tanstack/vue-query'
+import { createAuth } from '@musikhood-dev/auth-client/vue'
+import router from './router/index'
+import { authClient } from './lib/auth'
+import App from './App.vue'
+
+const app = createApp(App)
+app.use(VueQueryPlugin)
+app.use(router)
+app.use(createAuth(authClient, { navigate: (path: string) => router.push(path) }))
+app.mount('#app')
+`,
+  'src/App.vue': sfc('<RouterView />'),
+  '.env.development': 'VITE_BACKEND_URL="https://api.example.com"\n',
+  '.env.production': 'VITE_BACKEND_URL="https://api.example.com"\n',
+}
+
 export function createFixture(kind: FixtureKind, options: { sonner?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), `auth-client-init-${kind}-`))
-  if (kind === 'vue') {
+  if (kind === 'vue' || kind === 'vue-shadcn') {
     writeFiles(root, {
       'package.json': JSON.stringify(
         {
@@ -120,6 +224,7 @@ export function createFixture(kind: FixtureKind, options: { sonner?: boolean } =
 `,
       'src/main.ts': `export {}\n`,
     })
+    if (kind === 'vue-shadcn') writeFiles(root, SHADCN_VUE_STUBS)
     return root
   }
 
@@ -157,6 +262,13 @@ export function createFixture(kind: FixtureKind, options: { sonner?: boolean } =
     'app/routes.ts': `export default []\n`,
   })
   if (kind === 'react-shadcn') writeFiles(root, SHADCN_STUBS)
+  // `npx shadcn add sonner` — the toast component is what marks sonner as used (a bare
+  // package.json entry does not).
+  if (kind === 'react-shadcn' && options.sonner) {
+    writeFiles(root, {
+      'app/components/ui/sonner.tsx': `export function Toaster() {\n  return null\n}\n`,
+    })
+  }
   return root
 }
 

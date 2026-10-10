@@ -4,6 +4,52 @@ Wszystkie istotne zmiany w `@musikhood-dev/auth-client`.
 
 Format luźno wg [Keep a Changelog](https://keepachangelog.com/); wersjonowanie semver.
 
+## [2.3.1]
+
+Patch, wstecznie zgodny. Poprawki z pilotażu w panelu Vue 3 + shadcn-vue logującym się wprost do auth servera.
+
+### Fixed
+
+- **Globalne dialogi 2FA poza `<AuthBoundary>` nigdy się nie otwierały** (React i Vue). Poza boundary `useAuth()`
+  zwracał `isAuthenticated: false` zawsze, więc warunek `isAuthenticated && stage === 'step-up'` (szablony 2.3.0,
+  istniejące panele — dialog w `root.tsx` / `App.vue`) był nieosiągalny. Teraz:
+  - w stanie `step-up` / `enrollment` `isAuthenticated` jest `true` (w boundary i poza nim) — sesja żyje, także
+    gdy usera jeszcze nie znamy (świeża sesja SSO bez drugiego składnika),
+  - poza boundary `user` / `isAuthenticated` odzwierciedlają sesję klienta (cache `/me` ze wspólnego QueryClient
+    albo ostatnio znany user); `/me` nadal nie jest wołane poza boundary.
+    Panele z `isAuthenticated && stage` zaczynają działać po aktualizacji paczki, bez zmian w kodzie.
+- Szablony: dialogi otwierają się na podstawie samego `stage` (reset przy logout robi paczka).
+- `MfaCodeForm` (wszystkie warianty): przełączenie kod / kod zapasowy chowa błąd poprzedniej próby; Vue ustawia
+  focus przez `ref` + `nextTick` (natywny `autofocus` działa tylko przy ładowaniu strony) — także w dialogu
+  wymaganej konfiguracji 2FA.
+- Wariant bez UI: modal bez wpisanych kolorów (`#fff` / `#111`) — zmienne `--auth-modal-bg` / `--auth-modal-fg`
+  z fallbackiem `Canvas` / `CanvasText` (ciemny motyw).
+
+### Added — `init` w istniejącym projekcie
+
+- **Wariant shadcn-vue** (`components.json` + `components/ui/{button,dialog,input,label}/index.ts`): Dialog bez
+  możliwości zamknięcia (`@escape-key-down.prevent @pointer-down-outside.prevent @interact-outside.prevent`, ukryty
+  X), pole kodu z natywnym `@input` (pasywny `v-model` Input nie odświeża pola), natywny checkbox `accent-primary`.
+- Zmienna z adresem API: `--env-var NAZWA` albo wykrywana z `baseUrl` w istniejącym `lib/auth.ts` / plików `.env*`
+  (np. `VITE_BACKEND_URL`); `.env.example` nie jest ruszany, gdy klucz już jest w którymś pliku env.
+- Toast wg faktycznych importów w kodzie (`sonner`, `vue-sonner`, shadcn `use-toast`) i komponentów
+  `components/ui/{sonner,toast}` — paczka tylko w `package.json` się nie liczy (raport mówi, że pominięta).
+  Nowy szablon `lib/auth.ts` dla shadcn `use-toast` (`toast({ title, description, variant: 'destructive' })`).
+- Istniejąca strona `/login` (vue-router `path: '/login'`, RR7 `route('login', …)`): bez `LoginForm` (i trasy RR7),
+  zamiast tego przepis scalenia kroku kodu 2FA.
+- Istniejący `lib/auth.ts` bez `reportAuthError`: gotowy fragment do wklejenia (`INLINE_ERRORS`, `reportAuthError`
+  z wykrytym toastem, listener `login-error`).
+- Kroki ręczne tylko te, których brakuje (`VueQueryPlugin` + `createAuth` w `main.ts` — też ostrzeżenie o złej
+  kolejności; `AuthProvider` / `<AuthMfaDialogs />`; `<AuthBoundary>`; wartość zmiennej env).
+- Prettier repo (konfiguracja + lokalna instalacja): wygenerowane pliki są formatowane (`--skip-format` wyłącza);
+  bez prettier raport mówi, że pliki są w stylu paczki.
+- `AI_INTEGRATION.md` w paczce — instrukcja integracji dla agentów AI; `init` wypisuje do niej ścieżkę.
+
+### Docs
+
+- README: Quick start z dwiema ścieżkami (backend z bundlem / wprost do auth servera), instalacja `@^2.3` (`latest` to
+  jeszcze 2.1.0), przykład Vue z `ref`-ami, przykłady błędów na `isAuthErrorNamed`, `useAuth()` poza boundary.
+
 ## [2.3.0]
 
 Minor, wstecznie zgodny (czysto addytywny — aplikacje na 2.2.1 działają bez zmian).
@@ -82,7 +128,7 @@ stepUp, startEnrollment, requestEnrollment(password), reset }`, zintegrowane z `
 
 - `core/device.ts`: kolektor komponentów (bez zewnętrznych bibliotek, lekki parser UA +
   `navigator.userAgentData`), hash SHA-256 (`crypto.subtle`) z kanonicznego JSON — zgodny bajt w bajt
-  z API Core (wspólny wektor testowy). SSR-safe, cache na czas życia strony.
+  z auth serverem (wspólny wektor testowy). SSR-safe, cache na czas życia strony.
 - Config `deviceFingerprint?: boolean` (**default `true`**): nagłówek `X-Device-Fp` na każdym requeście,
   `device` w body loginu / refreshu / `verifyMfa` / `stepUpMfa`.
 

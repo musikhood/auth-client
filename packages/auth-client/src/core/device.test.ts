@@ -8,7 +8,7 @@ import {
   type DeviceComponents,
 } from './device.js'
 
-// Wspólny wektor z API Core: tests/Security/Domain/ValueObject/DeviceFingerprintTest.php.
+// Wspólny wektor z auth serverem (jego test DeviceFingerprint po stronie PHP).
 // Zmiana hasha = zepsute porównanie X-Device-Fp ↔ claim `fph` dla wszystkich klientów.
 const VECTOR: DeviceComponents = {
   browserFamily: 'Chrome',
@@ -30,7 +30,7 @@ const VECTOR_CANONICAL =
   '{"browserFamily":"Chrome","browserMajor":129,"canvasHash":"a1b2c3d4","colorDepth":30,"deviceMemory":8,"hardwareConcurrency":8,"languages":["pl-PL","pl","en-US"],"os":"macOS","platform":"MacIntel","screen":"1728x1117","timezone":"Europe/Warsaw","touchPoints":0,"webglRenderer":"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)","webglVendor":"Google Inc. (Apple)"}'
 const VECTOR_HASH = '8f2969c8eb86dfe2a5d8c73a1c1d03fe18edb87496738959a710b41366cc3528'
 
-describe('device fingerprint — kontrakt z API Core', () => {
+describe('device fingerprint — kontrakt z auth serverem', () => {
   it('kanoniczny JSON i hash zgodne z wektorem PHP', async () => {
     expect(canonicalJson(normalizeComponents(VECTOR))).toBe(VECTOR_CANONICAL)
     expect(await hashComponents(VECTOR)).toBe(VECTOR_HASH)

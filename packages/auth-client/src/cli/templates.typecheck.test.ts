@@ -58,8 +58,9 @@ function prepare(kind: FixtureKind, sonner: boolean): string {
   runInit({ cwd: root, dryRun: false, force: false, templatesDir: findTemplatesDir() })
   symlinkSync(join(packageDir, 'node_modules'), join(root, 'node_modules'), 'dir')
 
-  const appDir = kind === 'vue' ? 'src' : 'app'
-  const alias = kind === 'vue' ? '@/*' : '~/*'
+  const vue = kind === 'vue' || kind === 'vue-shadcn'
+  const appDir = vue ? 'src' : 'app'
+  const alias = vue ? '@/*' : '~/*'
   const paths: Record<string, string[]> = {
     [alias]: [`./${appDir}/*`],
     '@musikhood-dev/auth-client': [join(packageDir, 'src/index.ts')],
@@ -77,7 +78,7 @@ function prepare(kind: FixtureKind, sonner: boolean): string {
           module: 'ESNext',
           moduleResolution: 'Bundler',
           lib: ['ES2022', 'DOM', 'DOM.Iterable'],
-          jsx: kind === 'vue' ? 'preserve' : 'react-jsx',
+          jsx: vue ? 'preserve' : 'react-jsx',
           strict: true,
           noEmit: true,
           skipLibCheck: true,
@@ -126,6 +127,16 @@ describe('wygenerowane pliki się kompilują', () => {
     'Vue 3 (vue-tsc)',
     () => {
       const root = prepare('vue', false)
+      expect(typecheck(vueTscBin as string, root)).toBe('')
+    },
+    120_000,
+  )
+
+  it.skipIf(vueTscBin === null)(
+    'Vue 3 + shadcn-vue (vue-tsc)',
+    () => {
+      const root = prepare('vue-shadcn', false)
+      expect(existsSync(join(root, 'src/components/auth/AuthModal.vue'))).toBe(true)
       expect(typecheck(vueTscBin as string, root)).toBe('')
     },
     120_000,

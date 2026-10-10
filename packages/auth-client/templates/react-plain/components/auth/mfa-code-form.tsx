@@ -34,6 +34,15 @@ export function MfaCodeForm({
   const [code, setCode] = useState('')
   const [recoveryCode, setRecoveryCode] = useState('')
   const [rememberDevice, setRememberDevice] = useState(false)
+  // Switching code / recovery mode hides the previous attempt's error until the parent
+  // reports a new one (adjusting state on a prop change — no effect, no flicker).
+  const [errorHidden, setErrorHidden] = useState(false)
+  const [lastError, setLastError] = useState(error)
+  if (error !== lastError) {
+    setLastError(error)
+    setErrorHidden(false)
+  }
+  const visibleError = errorHidden ? null : error
 
   const canSubmit = useRecovery
     ? recoveryCode.replace(/[^a-z0-9]/gi, '').length === 10
@@ -63,7 +72,7 @@ export function MfaCodeForm({
             placeholder="xxxxx-xxxxx"
             maxLength={11}
             disabled={isPending}
-            aria-invalid={error !== null}
+            aria-invalid={visibleError !== null}
           />
           <small>Każdy kod zapasowy działa tylko raz.</small>
         </div>
@@ -80,14 +89,14 @@ export function MfaCodeForm({
             placeholder="000000"
             maxLength={6}
             disabled={isPending}
-            aria-invalid={error !== null}
+            aria-invalid={visibleError !== null}
           />
         </div>
       )}
 
-      {error ? (
+      {visibleError ? (
         <p role="alert" className="auth-error">
-          {error}
+          {visibleError}
         </p>
       ) : null}
 
@@ -115,8 +124,10 @@ export function MfaCodeForm({
           type="button"
           className="auth-link"
           onClick={() => {
+            // The other field mounts with autoFocus (React focuses it on mount).
             setUseRecovery((v) => !v)
             setRememberDevice(false)
+            setErrorHidden(true)
           }}
           disabled={isPending}
         >

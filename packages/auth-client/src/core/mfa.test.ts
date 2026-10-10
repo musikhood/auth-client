@@ -305,7 +305,7 @@ describe('/me i interceptor — step-up / enrollment / device', () => {
   it('confirmMfaEnrollment bez sesji (link bundla / stary serwer) → session null, bez eventu login', async () => {
     state.enrollmentConfirmResponse = {
       status: 200,
-      body: { recovery_codes: ['x'], return_url: 'https://pim.example.com' },
+      body: { recovery_codes: ['x'], return_url: 'https://panel.example.com' },
     }
     const client = newClient()
     const onLogin = vi.fn()

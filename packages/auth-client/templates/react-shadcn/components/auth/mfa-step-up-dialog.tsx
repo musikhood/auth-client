@@ -19,7 +19,7 @@ import { MFA_TEXTS, mfaErrorMessage } from '@@/lib/mfa'
 // closes by itself). Rendered by <AuthMfaDialogs /> inside AuthProvider.
 export function MfaStepUpDialog() {
   const mfa = useMfa()
-  const { logout, isAuthenticated } = useAuth()
+  const { logout } = useAuth()
   const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = async (data: MfaCodeSubmit) => {
@@ -33,7 +33,7 @@ export function MfaStepUpDialog() {
   }
 
   return (
-    <Dialog open={isAuthenticated && mfa.stage === 'step-up'}>
+    <Dialog open={mfa.stage === 'step-up'}>
       <DialogContent
         showCloseButton={false}
         onEscapeKeyDown={(e) => e.preventDefault()}

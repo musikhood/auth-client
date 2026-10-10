@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Skanuje pliki staged (lub argumenty CLI) pod kątem prywatnych domen / identyfikatorów,
+// Skanuje pliki staged (lub argumenty CLI) pod kątem prywatnych domen / nazw wewnętrznych,
 // żeby publiczne repo nie wyciekło niczego wewnętrznego.
 import { execSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
@@ -10,11 +10,28 @@ const FORBIDDEN_PATTERNS = [
   /vitkac\.sni\.pl/i,
   /\bsni\.pl\b/i,
   /\bmusikhood\.(?!io\b|com\b)\w+/i,
+  // Internal product / repo names (public docs say "auth server", "admin panel", "panel without
+  // its own backend"). Written so the patterns do not match their own source. Generic words
+  // (i18n, layout, pim) are not listed — too many false positives; reviewed by hand.
+  /\beditor[_-]v3/i,
+  /\bai[-_ ]panel\b/i,
+  /\bpim[_]frontend\b/i,
+  /\bauth[-]panel/i,
+  /\bAPI\sCore\b/,
 ]
 
 const SKIP_EXT = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg',
-  '.lock', '.zip', '.gz', '.tgz',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.svg',
+  '.lock',
+  '.zip',
+  '.gz',
+  '.tgz',
 ])
 
 function getFiles() {
