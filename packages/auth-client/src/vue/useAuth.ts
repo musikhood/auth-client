@@ -122,15 +122,22 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
         isAuthErrorNamed(me.error.value, 'MfaEnrollmentRequiredError')),
   )
   const inBoundary = mode === 'protected' || mode === 'guest-checking'
+  // Poza boundary: cache /me albo user z klienta (bez /me z tego komponentu).
+  const outsideUser = computed(() => (me.isError.value ? null : mfaUser.value))
 
   return {
     client,
+    // Poza boundary (mode null) /me nie jest wołane, ale user / isAuthenticated
+    // odzwierciedlają sesję klienta: cache /me (wspólny QueryClient) i stan 2FA.
+    // Globalne komponenty (np. dialogi 2FA w App.vue) widzą tę samą sesję co boundary.
     user: computed(() =>
       terminal.value
         ? null
-        : (mfaBlocked.value && inBoundary) || staleMfaError.value
+        : mfaBlocked.value || staleMfaError.value
           ? (mfaUser.value ?? null)
-          : (me.data.value ?? null),
+          : inBoundary
+            ? (me.data.value ?? null)
+            : (outsideUser.value ?? null),
     ),
     isLoading: computed(() =>
       terminal.value || mfaBlocked.value
@@ -141,14 +148,18 @@ export function useAuth(modeOverride?: AuthProtectedMode) {
             ? me.isLoading.value
             : false,
     ),
+    // step-up / enrollment = sesja żyje (403 z kodem dostaje tylko zalogowany),
+    // nawet gdy nie znamy jeszcze usera (świeża sesja SSO bez drugiego składnika).
     isAuthenticated: computed(() =>
       terminal.value
         ? false
-        : mfaBlocked.value && inBoundary
-          ? mfaUser.value != null
-          : enabled.value
-            ? !me.isError.value && me.data.value != null
-            : false,
+        : mfaBlocked.value
+          ? true
+          : staleMfaError.value
+            ? mfaUser.value != null
+            : inBoundary
+              ? !me.isError.value && me.data.value != null
+              : outsideUser.value != null,
     ),
     mfaStepUpRequired: computed(() => mfaState.value.stage === 'step-up'),
     mfaEnrollmentRequired: computed(() => mfaState.value.stage === 'enrollment'),

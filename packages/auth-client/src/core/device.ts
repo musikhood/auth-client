@@ -2,7 +2,7 @@
 // `device` in login / refresh / MFA bodies and hashed into the `X-Device-Fp`
 // header on every request. The server compares it with the session-bound one.
 //
-// CONTRACT with API Core (`DeviceFingerprint.php`): the hash is SHA-256 (hex) of
+// CONTRACT with the auth server (`DeviceFingerprint.php`): the hash is SHA-256 (hex) of
 // the canonical JSON of the NORMALIZED components — keys sorted, null / empty
 // dropped, strings trimmed and cut to 256 chars, languages ≤ 10 × 35 chars.
 // Both sides share a test vector (device.test.ts ↔ DeviceFingerprintTest.php).

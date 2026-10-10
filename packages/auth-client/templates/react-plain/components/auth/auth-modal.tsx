@@ -4,6 +4,9 @@ import type { CSSProperties, ReactNode } from 'react'
 // Minimal, dependency-free modal used by the 2FA dialogs (the app has no shadcn/ui).
 // Intentionally NOT dismissable: no close button, no Escape, no click outside — the
 // dialogs offer "Wyloguj się" as the only alternative. Restyle freely.
+// Colors: CSS variables with system-color fallbacks (Canvas / CanvasText follow the OS
+// light/dark scheme). Class-based dark mode: set --auth-modal-bg / --auth-modal-fg, e.g.
+// `.dark { --auth-modal-bg: #0a0a0a; --auth-modal-fg: #fafafa }`.
 const backdropStyle: CSSProperties = {
   position: 'fixed',
   inset: 0,
@@ -20,8 +23,9 @@ const panelStyle: CSSProperties = {
   maxWidth: 420,
   padding: 24,
   borderRadius: 8,
-  background: '#fff',
-  color: '#111',
+  colorScheme: 'light dark',
+  background: 'var(--auth-modal-bg, Canvas)',
+  color: 'var(--auth-modal-fg, CanvasText)',
   boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
 }
 

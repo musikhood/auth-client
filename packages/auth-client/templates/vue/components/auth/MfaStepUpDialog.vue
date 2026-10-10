@@ -13,10 +13,12 @@ import { MFA_TEXTS, mfaErrorMessage } from '@@/lib/mfa'
 // alternative is logging out (auth-client resets the MFA stage on logout, so the dialog
 // closes by itself). Rendered by <AuthMfaDialogs /> (after app.use(createAuth(...))).
 const { stage, stepUp } = useMfa()
-const { logout, isAuthenticated } = useAuth()
+const { logout } = useAuth()
 const error = ref<string | null>(null)
 
-const open = computed(() => isAuthenticated.value && stage.value === 'step-up')
+// Gated on the MFA stage alone: it is set only by a 403 on a live session and reset by
+// auth-client on logout / session end (no `isAuthenticated` needed — works outside <AuthBoundary>).
+const open = computed(() => stage.value === 'step-up')
 const pending = computed(() => stepUp.isPending.value)
 
 async function handleSubmit(data: MfaCodeSubmit) {

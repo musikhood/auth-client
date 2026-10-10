@@ -1,10 +1,10 @@
 import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import process from 'node:process'
 import { DetectError, type Framework } from './detect.js'
-import { formatReport, runInit } from './init.js'
+import { AI_GUIDE, formatReport, runInit } from './init.js'
 
 export interface CliIo {
   out: (line: string) => void
@@ -21,6 +21,9 @@ Opcje:
   --force                nadpisz istniejące pliki (poza istniejącą stroną logowania)
   --cwd <katalog>        katalog aplikacji (domyślnie bieżący)
   --framework react|vue  wymuś framework (domyślnie wykrywany z package.json)
+  --env-var <NAZWA>      zmienna z adresem API (domyślnie wykrywana z lib/auth.ts
+                         i plików .env*, inaczej VITE_API_BASE_URL)
+  --skip-format          nie formatuj wygenerowanych plików prettierem repo
   --yes, -y              bez pytań (init i tak nie zadaje pytań)
   --help, -h             ta pomoc`
 
@@ -73,11 +76,27 @@ export function main(argv: string[], io: CliIo, templatesDir?: string): number {
     dryRun: values['dry-run'] ?? false,
     force: values.force ?? false,
     framework: values.framework,
+    envVar: values['env-var'],
+    skipFormat: values['skip-format'] ?? false,
     templatesDir: templatesDir ?? findTemplatesDir(),
+  }
+  if (options.envVar !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(options.envVar)) {
+    io.err(
+      `--env-var: oczekiwano nazwy zmiennej (np. VITE_BACKEND_URL), podano "${options.envVar}"`,
+    )
+    return 1
   }
   try {
     const result = runInit(options)
-    for (const line of formatReport(result, options)) io.out(line)
+    const guide = join(dirname(options.templatesDir), AI_GUIDE)
+    // Relative inside the project (node_modules/…), absolute otherwise (e.g. a linked checkout).
+    const relativeGuide = relative(options.cwd, guide)
+    const guidePath = !existsSync(guide)
+      ? null
+      : relativeGuide && !relativeGuide.startsWith('..')
+        ? relativeGuide
+        : guide
+    for (const line of formatReport(result, { dryRun: options.dryRun, guidePath })) io.out(line)
     return 0
   } catch (error) {
     if (error instanceof DetectError) {
@@ -98,6 +117,8 @@ function parse(argv: string[]) {
       force: { type: 'boolean' },
       cwd: { type: 'string' },
       framework: { type: 'string' },
+      'env-var': { type: 'string' },
+      'skip-format': { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       help: { type: 'boolean', short: 'h' },
     },

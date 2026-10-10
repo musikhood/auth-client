@@ -1,12 +1,13 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { detectProject } from './detect.js'
 import { renderTemplate, runInit, type InitOptions } from './init.js'
 import { findTemplatesDir, main } from './main.js'
 import { stripJsonComments } from './jsonc.js'
-import { createFixture, snapshotTree, writeFiles } from './test-fixtures.js'
+import { createFixture, EXISTING_VUE_APP, snapshotTree, writeFiles } from './test-fixtures.js'
 
 const templatesDir = findTemplatesDir()
 const roots: string[] = []
@@ -42,7 +43,7 @@ describe('detectProject', () => {
       appDir: 'app',
       alias: '~/',
       tailwind: true,
-      toastModule: 'sonner',
+      toast: { kind: 'sonner', module: 'sonner', appModule: false },
       missingDeps: [],
     })
     expect(project.ui).toMatchObject({
@@ -57,7 +58,7 @@ describe('detectProject', () => {
   it('React Router 7 bez shadcn → wariant plain', () => {
     const project = detectProject(fixture('react-plain'))
     expect(project.ui.kind).toBe('plain')
-    expect(project.toastModule).toBeNull()
+    expect(project.toast).toBeNull()
   })
 
   it('components.json bez kompletu komponentów ui → plain', () => {
@@ -89,7 +90,7 @@ describe('detectProject', () => {
 
   it('--framework nadpisuje wykrywanie; nieznany projekt → błąd', () => {
     const root = fixture('react-plain')
-    expect(detectProject(root, 'vue').framework).toBe('vue')
+    expect(detectProject(root, { framework: 'vue' }).framework).toBe('vue')
     writeFileSync(join(root, 'package.json'), '{"dependencies":{}}')
     expect(() => detectProject(root)).toThrow(/Nie rozpoznano frameworka/)
   })
@@ -265,6 +266,238 @@ describe('init — Vue 3', () => {
 
     const second = init(root)
     expect(second.actions.every((a) => a.status === 'unchanged')).toBe(true)
+  })
+})
+
+const read = (root: string, path: string) => readFileSync(join(root, path), 'utf8')
+
+describe('init — shadcn-vue', () => {
+  it('components.json + components/ui/<name>/index.ts → wariant vue-shadcn', () => {
+    const root = fixture('vue-shadcn')
+    const project = detectProject(root)
+    expect(project.ui).toMatchObject({
+      kind: 'shadcn',
+      dir: 'src/components/ui',
+      uiImport: '@/components/ui',
+    })
+
+    init(root)
+    const modal = read(root, 'src/components/auth/AuthModal.vue')
+    expect(modal).toContain(`from '@/components/ui/dialog'`)
+    expect(modal).toContain('@escape-key-down.prevent')
+    expect(modal).toContain('@pointer-down-outside.prevent')
+    expect(modal).toContain('@interact-outside.prevent')
+    expect(modal).toContain('[&>button:last-child]:hidden')
+    const form = read(root, 'src/components/auth/MfaCodeForm.vue')
+    expect(form).toContain(`from '@/components/ui/input'`)
+    expect(form).toContain('@input="onCodeInput"')
+    expect(form).toContain('accent-primary')
+    // Shared with the plain variant (only composes AuthModal / MfaCodeForm).
+    expect(read(root, 'src/components/auth/MfaStepUpDialog.vue')).toContain(
+      "stage.value === 'step-up'",
+    )
+    expect(read(root, 'src/components/auth/LoginForm.vue')).toContain(
+      `from '@/components/ui/button'`,
+    )
+  })
+
+  it('niekompletne komponenty shadcn-vue → wariant bez UI', () => {
+    const root = fixture('vue-shadcn')
+    rmSync(join(root, 'src/components/ui/dialog'), { recursive: true })
+    expect(detectProject(root).ui.kind).toBe('plain')
+  })
+})
+
+describe('init — istniejący projekt (wzorzec: panel Vue sprzed 2FA)', () => {
+  function existingApp(): string {
+    const root = fixture('vue-shadcn')
+    writeFiles(root, EXISTING_VUE_APP)
+    const pkg = JSON.parse(read(root, 'package.json')) as { dependencies: Record<string, string> }
+    pkg.dependencies['vue-sonner'] = '^1.3.0'
+    writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2))
+    return root
+  }
+
+  it('wykrywa VITE_BACKEND_URL, use-toast, shadcn-vue, /login i gotowe main.ts', () => {
+    const project = detectProject(existingApp())
+    expect(project.env).toMatchObject({
+      key: 'VITE_BACKEND_URL',
+      source: 'src/lib/auth.ts',
+      definedIn: ['.env.development', '.env.production'],
+      hasValue: true,
+    })
+    expect(project.toast).toMatchObject({
+      kind: 'use-toast',
+      module: 'components/ui/toast/use-toast',
+      appModule: true,
+      source: 'src/lib/auth.ts',
+    })
+    expect(project.unusedToastDeps).toEqual(['vue-sonner'])
+    expect(project.ui.kind).toBe('shadcn')
+    expect(project.loginPage).toEqual({
+      routeFile: 'src/router/index.ts',
+      pageFile: 'src/components/auth/LoginView.vue',
+      mfaStep: false,
+    })
+    expect(project.wiring).toEqual({ provider: 'ok', dialogs: false, boundary: false })
+  })
+
+  it('--dry-run: zero fałszywych propozycji', () => {
+    const root = existingApp()
+    const before = snapshotTree(root)
+    const result = init(root, { dryRun: true })
+    expect(snapshotTree(root)).toEqual(before)
+
+    const byPath = Object.fromEntries(result.actions.map((a) => [a.path, a]))
+    expect(byPath['src/lib/auth.ts']?.status).toBe('skipped')
+    expect(byPath['src/components/auth/LoginForm.vue']).toBeUndefined()
+    expect(byPath['.env.example']).toMatchObject({ status: 'unchanged' })
+
+    const steps = result.manualSteps.join('\n')
+    expect(steps).not.toContain('app.use(VueQueryPlugin)')
+    expect(steps).not.toContain('VITE_API_BASE_URL')
+    expect(steps).not.toContain('Ustaw VITE_BACKEND_URL')
+    expect(steps).toContain('src/App.vue')
+    expect(steps).toContain('Masz już stronę logowania src/components/auth/LoginView.vue')
+    expect(steps).toContain(
+      `import MfaCodeForm, { type MfaCodeSubmit } from '@/components/auth/MfaCodeForm.vue'`,
+    )
+
+    // Existing lib/auth.ts: paste-ready fragment wired to the app's toast.
+    const warning = result.warnings.join('\n')
+    expect(warning).toContain('zastąp nim obecny listener login-error')
+    expect(warning).toContain(`import { toast } from '@/components/ui/toast/use-toast'`)
+    expect(warning).toContain('const INLINE_ERRORS')
+    expect(warning).toContain("variant: 'destructive'")
+    expect(warning).not.toContain('createAuthClient')
+  })
+
+  it('wpięcie kompletne → brak kroków dla main.ts / App.vue', () => {
+    const root = existingApp()
+    writeFiles(root, {
+      'src/App.vue': '<template><RouterView /><AuthMfaDialogs /></template>\n',
+      'src/components/Layout.vue': '<template><AuthBoundary><slot /></AuthBoundary></template>\n',
+    })
+    const steps = init(root, { dryRun: true }).manualSteps.join('\n')
+    expect(steps).not.toContain('src/App.vue')
+    expect(steps).not.toContain('<AuthBoundary> (np. w layoucie)')
+  })
+
+  it('strona logowania z krokiem 2FA (useMfa + MfaCodeForm) → bez przepisu', () => {
+    const root = existingApp()
+    writeFiles(root, {
+      'src/components/auth/LoginView.vue':
+        "<script setup lang=\"ts\">\nimport { useMfa } from '@musikhood-dev/auth-client/vue'\nimport MfaCodeForm from '@/components/auth/MfaCodeForm.vue'\n</script>\n",
+    })
+    const result = init(root, { dryRun: true })
+    expect(result.project.loginPage?.mfaStep).toBe(true)
+    expect(result.manualSteps.join('\n')).not.toContain('Masz już stronę logowania')
+  })
+
+  it('createAuth przed VueQueryPlugin → krok „zamień kolejność”', () => {
+    const root = existingApp()
+    writeFiles(root, {
+      'src/main.ts': `app.use(createAuth(authClient))\napp.use(VueQueryPlugin)\n`,
+    })
+    expect(init(root, { dryRun: true }).manualSteps.join('\n')).toContain('zamień kolejność')
+  })
+})
+
+describe('init — zmienna z adresem API', () => {
+  it('--env-var: w lib/auth.ts i .env.example', () => {
+    const root = fixture('vue')
+    init(root, { envVar: 'VITE_AUTH_URL' })
+    expect(read(root, 'src/lib/auth.ts')).toContain('baseUrl: import.meta.env.VITE_AUTH_URL')
+    expect(read(root, '.env.example')).toContain('VITE_AUTH_URL=')
+  })
+
+  it('klucz z .env.development → bez dopisywania do .env.example', () => {
+    const root = fixture('react-plain')
+    writeFiles(root, { '.env.development': 'VITE_BACKEND_URL=http://localhost:8080\n' })
+    const result = init(root)
+    expect(read(root, 'app/lib/auth.ts')).toContain('import.meta.env.VITE_BACKEND_URL')
+    expect(result.actions.find((a) => a.path === '.env.example')).toMatchObject({
+      status: 'unchanged',
+      note: 'VITE_BACKEND_URL już jest w .env.development',
+    })
+    expect(existsSync(join(root, '.env.example'))).toBe(false)
+    expect(result.manualSteps.join('\n')).not.toContain('Ustaw VITE_BACKEND_URL')
+  })
+})
+
+describe('init — toast wg faktycznego użycia', () => {
+  it('sonner tylko w package.json (bez importów i komponentu) → nie wykryto', () => {
+    const root = fixture('react-plain')
+    const pkg = JSON.parse(read(root, 'package.json')) as { dependencies: Record<string, string> }
+    pkg.dependencies.sonner = '^2.0.0'
+    writeFileSync(join(root, 'package.json'), JSON.stringify(pkg))
+    const project = detectProject(root)
+    expect(project.toast).toBeNull()
+    expect(project.unusedToastDeps).toEqual(['sonner'])
+  })
+
+  it('import { toast } from "sonner" w kodzie → sonner', () => {
+    const root = fixture('react-plain')
+    writeFiles(root, {
+      'app/lib/notify.ts': `import { toast } from 'sonner'\nexport const n = toast\n`,
+    })
+    expect(detectProject(root).toast).toMatchObject({ kind: 'sonner', source: 'app/lib/notify.ts' })
+  })
+})
+
+describe('init — istniejąca strona logowania (React Router 7)', () => {
+  it('route("login", …) na własną stronę → bez LoginForm i trasy, przepis scalenia', () => {
+    const root = fixture('react-shadcn')
+    writeFiles(root, {
+      'app/routes.ts': `import { route } from '@react-router/dev/routes'\nexport default [route('login', 'routes/auth/login.tsx')]\n`,
+      'app/routes/auth/login.tsx': 'export default function Login() {\n  return null\n}\n',
+      'app/root.tsx':
+        'export default function App() {\n  return <AuthProvider><Outlet /><AuthMfaDialogs /></AuthProvider>\n}\n',
+    })
+    const result = init(root)
+    const paths = result.actions.map((a) => a.path)
+    expect(paths).not.toContain('app/components/auth/login-form.tsx')
+    expect(paths).not.toContain('app/routes/login/login.tsx')
+    const steps = result.manualSteps.join('\n')
+    expect(steps).toContain('Masz już stronę logowania app/routes/auth/login.tsx')
+    expect(steps).toContain(`from '~/components/auth/mfa-code-form'`)
+    expect(steps).not.toContain('owiń <Outlet />')
+  })
+
+  it('strona wygenerowana wcześniej przez init się nie liczy', () => {
+    const root = fixture('react-shadcn')
+    init(root)
+    writeFiles(root, {
+      'app/routes.ts': `export default [route('login', './routes/login/login.tsx')]\n`,
+    })
+    expect(detectProject(root).loginPage).toBeNull()
+  })
+})
+
+describe('init — prettier repo', () => {
+  const repoPrettier = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../node_modules/prettier',
+  )
+
+  it.skipIf(!existsSync(repoPrettier))(
+    'formatuje wygenerowane pliki konfiguracją repo',
+    () => {
+      const root = fixture('vue')
+      writeFiles(root, { '.prettierrc': '{ "semi": true, "singleQuote": false }\n' })
+      mkdirSync(join(root, 'node_modules'))
+      symlinkSync(repoPrettier, join(root, 'node_modules/prettier'), 'dir')
+      const result = init(root)
+      expect(result.formatting).toContain('sformatowano prettierem repo (.prettierrc)')
+      const auth = read(root, 'src/lib/auth.ts')
+      expect(auth).toContain('from "@musikhood-dev/auth-client";')
+    },
+    60_000,
+  )
+
+  it('bez konfiguracji → pliki w stylu paczki, raport to mówi', () => {
+    const result = init(fixture('vue'))
+    expect(result.formatting).toContain('brak prettier w repo')
   })
 })
 

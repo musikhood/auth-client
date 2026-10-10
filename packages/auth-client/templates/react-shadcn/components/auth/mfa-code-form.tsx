@@ -43,6 +43,15 @@ export function MfaCodeForm({
   const [code, setCode] = useState('')
   const [recoveryCode, setRecoveryCode] = useState('')
   const [rememberDevice, setRememberDevice] = useState(false)
+  // Switching code / recovery mode hides the previous attempt's error until the parent
+  // reports a new one (adjusting state on a prop change — no effect, no flicker).
+  const [errorHidden, setErrorHidden] = useState(false)
+  const [lastError, setLastError] = useState(error)
+  if (error !== lastError) {
+    setLastError(error)
+    setErrorHidden(false)
+  }
+  const visibleError = errorHidden ? null : error
 
   const canSubmit = useRecovery
     ? recoveryCode.replace(/[^a-z0-9]/gi, '').length === 10
@@ -73,7 +82,7 @@ export function MfaCodeForm({
             maxLength={11}
             disabled={isPending}
             className={cn('font-mono tracking-wider', inputClassName)}
-            aria-invalid={error !== null}
+            aria-invalid={visibleError !== null}
           />
           <p className="text-xs text-muted-foreground">Każdy kod zapasowy działa tylko raz.</p>
         </div>
@@ -91,12 +100,16 @@ export function MfaCodeForm({
             maxLength={6}
             disabled={isPending}
             className={cn('text-center font-mono text-lg tracking-[0.5em]', inputClassName)}
-            aria-invalid={error !== null}
+            aria-invalid={visibleError !== null}
           />
         </div>
       )}
 
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {visibleError ? (
+        <p role="alert" className="text-sm text-destructive">
+          {visibleError}
+        </p>
+      ) : null}
 
       {useRecovery ? (
         <p className="text-sm text-muted-foreground">{MFA_TEXTS.recoveryCodeHint}</p>
@@ -127,8 +140,10 @@ export function MfaCodeForm({
         <button
           type="button"
           onClick={() => {
+            // The other field mounts with autoFocus (React focuses it on mount).
             setUseRecovery((v) => !v)
             setRememberDevice(false)
+            setErrorHidden(true)
           }}
           disabled={isPending}
           className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground"

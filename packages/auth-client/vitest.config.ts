@@ -9,6 +9,11 @@ export default defineConfig({
     // placeholders / package imports resolve to the shared templates and to src/.
     alias: [
       { find: /^@@\/lib\/(.*)$/, replacement: fromRoot('./templates/shared/lib/$1') },
+      {
+        find: /^@@\/components\/auth\/(.*)$/,
+        replacement: fromRoot('./templates/react-plain/components/auth/$1'),
+      },
+      { find: /^@musikhood-dev\/auth-client\/react$/, replacement: fromRoot('./src/react.ts') },
       { find: /^@musikhood-dev\/auth-client$/, replacement: fromRoot('./src/index.ts') },
     ],
   },
@@ -16,6 +21,9 @@ export default defineConfig({
     environment: 'happy-dom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    // Generated lib/auth.ts (imported by the template behaviour tests) creates its client
+    // from import.meta.env at import time.
+    env: { VITE_API_BASE_URL: 'https://auth.example.com' },
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     coverage: {
       reporter: ['text', 'html'],

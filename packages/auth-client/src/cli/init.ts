@@ -1,12 +1,18 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { detectProject, type Framework, type ProjectInfo } from './detect.js'
+import process from 'node:process'
+import { detectProject, GENERATED_MARKER, type Framework, type ProjectInfo } from './detect.js'
 
 export interface InitOptions {
   cwd: string
   dryRun: boolean
   force: boolean
   framework?: Framework
+  // --env-var: env variable with the API base URL (default: detected).
+  envVar?: string
+  // --skip-format: do not run the repo's prettier on the generated files.
+  skipFormat?: boolean
   // Package templates directory (resolved automatically when omitted).
   templatesDir: string
 }
@@ -25,6 +31,8 @@ export interface InitResult {
   actions: FileAction[]
   warnings: string[]
   manualSteps: string[]
+  // Style of the generated files: formatted with the repo's prettier, or left as shipped.
+  formatting: string
 }
 
 // One generated file: template (relative to templates/) → target (relative to appDir).
@@ -38,9 +46,13 @@ interface FileSpec {
   requiredKeys?: string[]
 }
 
-const GENERATED_MARKER = '@musikhood-dev/auth-client init'
-const ENV_KEY = 'VITE_API_BASE_URL'
-const ENV_BLOCK = `# auth-client: adres API (auth server / backend panelu), np. https://api.example.com\n${ENV_KEY}=\n`
+// Key used in the shipped templates; replaced by the detected / --env-var key.
+const TEMPLATE_ENV_KEY = 'VITE_API_BASE_URL'
+const envBlock = (key: string) =>
+  `# auth-client: adres API (auth server / backend panelu), np. https://api.example.com\n${key}=\n`
+
+// Shipped next to templates/ in the package (see "files" in package.json).
+export const AI_GUIDE = 'AI_INTEGRATION.md'
 
 const LIB_AUTH_EXPORTS = ['authClient', 'reportAuthError']
 const LIB_MFA_EXPORTS = [
@@ -65,9 +77,28 @@ const LIB_MFA_KEYS = [
   'recoveryCodeHint',
 ]
 
+function libAuthTemplate(project: ProjectInfo): string {
+  if (!project.toast) return 'shared/lib/auth.ts'
+  return project.toast.kind === 'use-toast'
+    ? 'shared/lib/auth.use-toast.ts'
+    : 'shared/lib/auth.toast.ts'
+}
+
+// Vue components in generation order. Shared by both Vue variants: the ones that only
+// compose AuthModal / MfaCodeForm.
+const VUE_FILES = [
+  'AuthModal.vue',
+  'MfaCodeForm.vue',
+  'MfaStepUpDialog.vue',
+  'MfaEnrollmentRequiredDialog.vue',
+  'AuthMfaDialogs.vue',
+  'LoginForm.vue',
+]
+const VUE_SHARED = ['MfaStepUpDialog.vue', 'AuthMfaDialogs.vue']
+
 function fileSpecs(project: ProjectInfo): FileSpec[] {
   const libAuth: FileSpec = {
-    template: project.toastModule ? 'shared/lib/auth.toast.ts' : 'shared/lib/auth.ts',
+    template: libAuthTemplate(project),
     target: 'lib/auth.ts',
     requiredExports: LIB_AUTH_EXPORTS,
   }
@@ -77,20 +108,17 @@ function fileSpecs(project: ProjectInfo): FileSpec[] {
     requiredExports: LIB_MFA_EXPORTS,
     requiredKeys: LIB_MFA_KEYS,
   }
+  // An existing login page of the app gets a merge recipe instead of a generated form.
+  const generateLogin = project.loginPage === null
 
   if (project.framework === 'vue') {
+    const variant = project.ui.kind === 'shadcn' ? 'vue-shadcn' : 'vue'
+    const names = VUE_FILES.filter((name) => generateLogin || name !== 'LoginForm.vue')
     return [
       libAuth,
       libMfa,
-      ...[
-        'AuthModal.vue',
-        'MfaCodeForm.vue',
-        'MfaStepUpDialog.vue',
-        'MfaEnrollmentRequiredDialog.vue',
-        'AuthMfaDialogs.vue',
-        'LoginForm.vue',
-      ].map((name) => ({
-        template: `vue/components/auth/${name}`,
+      ...names.map((name) => ({
+        template: `${VUE_SHARED.includes(name) ? 'vue' : variant}/components/auth/${name}`,
         target: `components/auth/${name}`,
       })),
     ]
@@ -108,7 +136,7 @@ function fileSpecs(project: ProjectInfo): FileSpec[] {
     'mfa-code-form.tsx',
     'mfa-step-up-dialog.tsx',
     'mfa-enrollment-required-dialog.tsx',
-    'login-form.tsx',
+    ...(generateLogin ? ['login-form.tsx'] : []),
   ]) {
     specs.push({
       template: `${variant}/components/auth/${name}`,
@@ -119,7 +147,7 @@ function fileSpecs(project: ProjectInfo): FileSpec[] {
     template: 'react-common/components/auth/auth-mfa-dialogs.tsx',
     target: 'components/auth/auth-mfa-dialogs.tsx',
   })
-  if (project.reactRouter) {
+  if (project.reactRouter && generateLogin) {
     specs.push({
       template: 'react-common/routes/login/login.tsx',
       target: 'routes/login/login.tsx',
@@ -156,7 +184,16 @@ export function renderTemplate(source: string, project: ProjectInfo, targetFile:
   let out = source.replace(/(['"])@@\/([^'"]+)\1/g, (_match, quote: string, modulePath: string) => {
     return `${quote}${resolveSpecifier(project, targetFile, modulePath)}${quote}`
   })
-  if (project.toastModule) out = out.split('@@toast-module').join(project.toastModule)
+  const toast = project.toast
+  if (toast) {
+    const specifier = toast.appModule ? importPath(project, targetFile, toast.module) : toast.module
+    out = out.split('@@toast-module').join(specifier)
+  }
+  if (project.env.key !== TEMPLATE_ENV_KEY) {
+    out = out
+      .split(`import.meta.env.${TEMPLATE_ENV_KEY}`)
+      .join(`import.meta.env.${project.env.key}`)
+  }
   if (project.ui.kind === 'shadcn' && !project.ui.dialogCloseButtonProp) {
     // Older shadcn dialog: no `showCloseButton` prop (the X closes nothing anyway — the
     // dialog is controlled and has no onOpenChange).
@@ -193,25 +230,123 @@ function writeFile(root: string, path: string, content: string, dryRun: boolean)
   writeFileSync(abs, content, 'utf8')
 }
 
-function updateEnvExample(root: string, dryRun: boolean): FileAction {
+function updateEnvExample(project: ProjectInfo, dryRun: boolean): FileAction {
   const path = '.env.example'
-  const abs = join(root, path)
+  const { key, definedIn } = project.env
+  // The key is already documented in some env file of the app — nothing to propose.
+  if (definedIn.length > 0) {
+    return { path, status: 'unchanged', note: `${key} już jest w ${definedIn.join(', ')}` }
+  }
+  const abs = join(project.root, path)
   if (!existsSync(abs)) {
-    writeFile(root, path, ENV_BLOCK, dryRun)
-    return { path, status: 'created', note: ENV_KEY }
+    writeFile(project.root, path, envBlock(key), dryRun)
+    return { path, status: 'created', note: key }
   }
   const current = readFileSync(abs, 'utf8')
-  if (new RegExp(`^\\s*(?:export\\s+)?${ENV_KEY}\\s*=`, 'm').test(current)) {
-    return { path, status: 'unchanged', note: `${ENV_KEY} już jest` }
-  }
   const separator = current.length === 0 || current.endsWith('\n') ? '' : '\n'
-  writeFile(root, path, `${current}${separator}${ENV_BLOCK}`, dryRun)
-  return { path, status: 'appended', note: ENV_KEY }
+  writeFile(project.root, path, `${current}${separator}${envBlock(key)}`, dryRun)
+  return { path, status: 'appended', note: key }
+}
+
+const indent = (lines: string[]) => lines.map((line) => (line ? `    ${line}` : '')).join('\n')
+
+// Paste-ready part of the generated lib/auth.ts for an existing file: the inline-error
+// filter, reportAuthError (wired to the detected toast) and the login-error listener.
+function libAuthSnippet(project: ProjectInfo, templatesDir: string, path: string): string {
+  const rendered = renderTemplate(
+    readFileSync(join(templatesDir, libAuthTemplate(project)), 'utf8'),
+    project,
+    path,
+  )
+  const imports = rendered
+    .split('\n')
+    .filter((line) => line.startsWith('import '))
+    .map((line) => line.replace('{ createAuthClient, isAuthErrorNamed }', '{ isAuthErrorNamed }'))
+  const body = rendered.slice(rendered.indexOf('// Shown inline')).trimEnd().split('\n')
+  return indent([...imports, '', ...body])
+}
+
+function loginRecipe(project: ProjectInfo, page: string): string {
+  const vue = project.framework === 'vue'
+  const form = vue ? 'MfaCodeForm.vue' : 'mfa-code-form'
+  const formImport = importPath(project, page, `components/auth/${form}`)
+  const mfaImport = importPath(project, page, 'lib/mfa')
+  const reference = vue
+    ? `templates/${project.ui.kind === 'shadcn' ? 'vue-shadcn' : 'vue'}/components/auth/LoginForm.vue`
+    : `templates/${project.ui.kind === 'shadcn' ? 'react-shadcn' : 'react-plain'}/components/auth/login-form.tsx`
+  const lines = vue
+    ? [
+        `import MfaCodeForm, { type MfaCodeSubmit } from '${formImport}'`,
+        `import { useMfa } from '@musikhood-dev/auth-client/vue'`,
+        `import { isAuthError, loginErrorMessage, MFA_TEXTS, mfaErrorMessage } from '${mfaImport}'`,
+        ``,
+        `const { stage, verify, reset } = useMfa()`,
+        `const mfaError = ref<string | null>(null)`,
+        ``,
+        `// w catch logowania (zamiast własnego komunikatu):`,
+        `if (isAuthError(e, 'MfaRequiredError')) return // stage === 'code' — krok kodu`,
+        `if (isAuthError(e, 'MfaEnrollmentRequiredError')) {`,
+        `  if (e.enrollmentUrl) window.location.assign(e.enrollmentUrl)`,
+        `  else errorMessage.value = MFA_TEXTS.enrollmentFailed`,
+        `  return`,
+        `}`,
+        `errorMessage.value = loginErrorMessage(e)`,
+        ``,
+        `async function handleMfaSubmit(data: MfaCodeSubmit) {`,
+        `  mfaError.value = null`,
+        `  try {`,
+        `    await verify(data)`,
+        `  } catch (e) {`,
+        `    if (isAuthError(e, 'MfaTokenExpiredError')) {`,
+        `      errorMessage.value = MFA_TEXTS.tokenExpired // klient wrócił już do kroku hasła`,
+        `      return`,
+        `    }`,
+        `    mfaError.value = mfaErrorMessage(e) ?? MFA_TEXTS.verifyFailed`,
+        `  }`,
+        `}`,
+        ``,
+        `<!-- w szablonie: krok kodu zamiast formularza hasła, wygląd strony bez zmian -->`,
+        `<MfaCodeForm v-if="stage === 'code'" :is-pending="verify.isPending.value" :error="mfaError"`,
+        `  submit-label="Zweryfikuj" cancel-label="Wróć do logowania"`,
+        `  @submit="handleMfaSubmit" @cancel="() => { mfaError = null; reset() }" />`,
+        `<form v-else …>…obecny formularz…</form>`,
+      ]
+    : [
+        `import { MfaCodeForm, type MfaCodeSubmit } from '${formImport}'`,
+        `import { useMfa } from '@musikhood-dev/auth-client/react'`,
+        `import { isAuthError, loginErrorMessage, MFA_TEXTS, mfaErrorMessage } from '${mfaImport}'`,
+        ``,
+        `const mfa = useMfa()`,
+        `const [mfaError, setMfaError] = useState<string | null>(null)`,
+        ``,
+        `// w catch logowania (zamiast własnego komunikatu):`,
+        `if (isAuthError(e, 'MfaRequiredError')) return // mfa.stage === 'code' — krok kodu`,
+        `if (isAuthError(e, 'MfaEnrollmentRequiredError')) {`,
+        `  if (e.enrollmentUrl) window.location.assign(e.enrollmentUrl)`,
+        `  else setError(MFA_TEXTS.enrollmentFailed)`,
+        `  return`,
+        `}`,
+        `setError(loginErrorMessage(e))`,
+        ``,
+        `// render: krok kodu zamiast formularza hasła, wygląd strony bez zmian`,
+        `mfa.stage === 'code' ? (`,
+        `  <MfaCodeForm isPending={mfa.verify.isPending} error={mfaError} submitLabel="Zweryfikuj"`,
+        `    onSubmit={(data: MfaCodeSubmit) => void mfa.verify(data).catch((e: unknown) =>`,
+        `      isAuthError(e, 'MfaTokenExpiredError') ? setError(MFA_TEXTS.tokenExpired)`,
+        `        : setMfaError(mfaErrorMessage(e) ?? MFA_TEXTS.verifyFailed))}`,
+        `    onCancel={() => { setMfaError(null); mfa.reset() }} cancelLabel="Wróć do logowania" />`,
+        `) : (<form>…obecny formularz…</form>)`,
+      ]
+  return (
+    `Masz już stronę logowania ${page} — LoginForm nie został wygenerowany. Dodaj w niej krok kodu 2FA` +
+    ` (pełny wzór: node_modules/@musikhood-dev/auth-client/${reference}):\n\n${indent(lines)}`
+  )
 }
 
 function manualSteps(project: ProjectInfo, actions: FileAction[]): string[] {
   const steps: string[] = []
   const app = project.appDir
+  const { wiring } = project
   const actionFor = (path: string) => actions.find((action) => action.path === path)
 
   if (project.missingDeps.length > 0) {
@@ -222,10 +357,15 @@ function manualSteps(project: ProjectInfo, actions: FileAction[]): string[] {
     const rootFile = project.reactRouter ? `${app}/root.tsx` : `${app}/main.tsx`
     const auth = importPath(project, rootFile, 'lib/auth')
     const dialogs = importPath(project, rootFile, 'components/auth/auth-mfa-dialogs')
-    if (project.reactRouter) {
+    if (wiring.provider === 'ok' && !wiring.dialogs) {
+      steps.push(
+        `${rootFile} — dodaj dialogi 2FA wewnątrz <AuthProvider> (np. obok <Outlet />):\n\n` +
+          indent([`import { AuthMfaDialogs } from '${dialogs}'`, ``, `<AuthMfaDialogs />`]),
+      )
+    } else if (wiring.provider !== 'ok' && project.reactRouter) {
       steps.push(
         `${rootFile} — owiń <Outlet /> w AuthProvider i dodaj dialogi 2FA:\n\n` +
-          [
+          indent([
             `import { Outlet, useNavigate } from 'react-router'`,
             `import { AuthProvider } from '@musikhood-dev/auth-client/react'`,
             `import { authClient } from '${auth}'`,
@@ -240,14 +380,12 @@ function manualSteps(project: ProjectInfo, actions: FileAction[]): string[] {
             `    </AuthProvider>`,
             `  )`,
             `}`,
-          ]
-            .map((line) => (line ? `    ${line}` : ''))
-            .join('\n'),
+          ]),
       )
-    } else {
+    } else if (wiring.provider !== 'ok') {
       steps.push(
         `Owiń aplikację (np. w ${rootFile}) w AuthProvider i dodaj dialogi 2FA:\n\n` +
-          [
+          indent([
             `import { AuthProvider } from '@musikhood-dev/auth-client/react'`,
             `import { authClient } from '${auth}'`,
             `import { AuthMfaDialogs } from '${dialogs}'`,
@@ -256,34 +394,38 @@ function manualSteps(project: ProjectInfo, actions: FileAction[]): string[] {
             `  <App />`,
             `  <AuthMfaDialogs />`,
             `</AuthProvider>`,
-          ]
-            .map((line) => (line ? `    ${line}` : ''))
-            .join('\n'),
+          ]),
       )
     }
 
-    const loginRoute = actionFor(`${app}/routes/login/login.tsx`)
-    const loginForm = importPath(
-      project,
-      `${app}/routes/login/login.tsx`,
-      'components/auth/login-form',
-    )
-    if (loginRoute && loginRoute.status === 'skipped') {
-      steps.push(
-        `Masz już ${loginRoute.path} — wyrenderuj w nim <LoginForm /> z '${loginForm}' (wewnątrz <AuthBoundary mode="guest">).`,
-      )
-    } else if (loginRoute) {
-      const routesFile = join(project.root, app, 'routes.ts')
-      const routes = existsSync(routesFile) ? readFileSync(routesFile, 'utf8') : null
-      if (routes !== null && !routes.includes('routes/login/login')) {
-        steps.push(
-          `Zarejestruj trasę logowania w ${app}/routes.ts:\n\n    route('login', './routes/login/login.tsx'),`,
-        )
+    if (project.loginPage) {
+      if (!project.loginPage.mfaStep) {
+        steps.push(loginRecipe(project, project.loginPage.pageFile ?? project.loginPage.routeFile))
       }
     } else {
-      steps.push(
-        `Formularz logowania: <LoginForm /> z '${importPath(project, rootFile, 'components/auth/login-form')}' — wyrenderuj go na /login wewnątrz <AuthBoundary mode="guest">.`,
+      const loginRoute = actionFor(`${app}/routes/login/login.tsx`)
+      const loginForm = importPath(
+        project,
+        `${app}/routes/login/login.tsx`,
+        'components/auth/login-form',
       )
+      if (loginRoute && loginRoute.status === 'skipped') {
+        steps.push(
+          `Masz już ${loginRoute.path} — wyrenderuj w nim <LoginForm /> z '${loginForm}' (wewnątrz <AuthBoundary mode="guest">).`,
+        )
+      } else if (loginRoute) {
+        const routesFile = join(project.root, app, 'routes.ts')
+        const routes = existsSync(routesFile) ? readFileSync(routesFile, 'utf8') : null
+        if (routes !== null && !routes.includes('routes/login/login')) {
+          steps.push(
+            `Zarejestruj trasę logowania w ${app}/routes.ts:\n\n    route('login', './routes/login/login.tsx'),`,
+          )
+        }
+      } else {
+        steps.push(
+          `Formularz logowania: <LoginForm /> z '${importPath(project, rootFile, 'components/auth/login-form')}' — wyrenderuj go na /login wewnątrz <AuthBoundary mode="guest">.`,
+        )
+      }
     }
   } else {
     const mainFile = `${app}/main.ts`
@@ -291,47 +433,85 @@ function manualSteps(project: ProjectInfo, actions: FileAction[]): string[] {
     const navigate = project.vueRouter
       ? `createAuth(authClient, { navigate: (path) => router.push(path) })`
       : `createAuth(authClient)`
-    steps.push(
-      `${mainFile} — zainstaluj pluginy (VueQueryPlugin przed createAuth):\n\n` +
-        [
-          `import { VueQueryPlugin } from '@tanstack/vue-query'`,
-          `import { createAuth } from '@musikhood-dev/auth-client/vue'`,
-          `import { authClient } from '${importPath(project, mainFile, 'lib/auth')}'`,
-          ``,
-          `app.use(VueQueryPlugin)`,
-          `app.use(${navigate})`,
-        ]
-          .map((line) => (line ? `    ${line}` : ''))
-          .join('\n'),
-    )
-    steps.push(
-      `${appFile} — dodaj dialogi 2FA:\n\n` +
-        [
-          `<script setup lang="ts">`,
-          `import AuthMfaDialogs from '${importPath(project, appFile, 'components/auth/AuthMfaDialogs.vue')}'`,
-          `</script>`,
-          ``,
-          `<template>`,
-          project.vueRouter ? `  <RouterView />` : `  <!-- twoja aplikacja -->`,
-          `  <AuthMfaDialogs />`,
-          `</template>`,
-        ]
-          .map((line) => (line ? `    ${line}` : ''))
-          .join('\n'),
-    )
-    steps.push(
-      `Formularz logowania: LoginForm z '${importPath(project, appFile, 'components/auth/LoginForm.vue')}' — wyrenderuj go na /login wewnątrz <AuthBoundary mode="guest">.`,
-    )
+    if (wiring.provider === 'wrong-order') {
+      steps.push(
+        `${mainFile} — app.use(VueQueryPlugin) musi być PRZED app.use(createAuth(...)) — zamień kolejność.`,
+      )
+    } else if (wiring.provider === 'missing') {
+      steps.push(
+        `${mainFile} — zainstaluj pluginy (VueQueryPlugin przed createAuth):\n\n` +
+          indent([
+            `import { VueQueryPlugin } from '@tanstack/vue-query'`,
+            `import { createAuth } from '@musikhood-dev/auth-client/vue'`,
+            `import { authClient } from '${importPath(project, mainFile, 'lib/auth')}'`,
+            ``,
+            `app.use(VueQueryPlugin)`,
+            `app.use(${navigate})`,
+          ]),
+      )
+    }
+    if (!wiring.dialogs) {
+      steps.push(
+        `${appFile} — dodaj dialogi 2FA (poza <AuthBoundary> jest OK):\n\n` +
+          indent([
+            `<script setup lang="ts">`,
+            `import AuthMfaDialogs from '${importPath(project, appFile, 'components/auth/AuthMfaDialogs.vue')}'`,
+            `</script>`,
+            ``,
+            `<template>`,
+            project.vueRouter ? `  <RouterView />` : `  <!-- twoja aplikacja -->`,
+            `  <AuthMfaDialogs />`,
+            `</template>`,
+          ]),
+      )
+    }
+    if (project.loginPage) {
+      if (!project.loginPage.mfaStep) {
+        steps.push(loginRecipe(project, project.loginPage.pageFile ?? project.loginPage.routeFile))
+      }
+    } else {
+      steps.push(
+        `Formularz logowania: LoginForm z '${importPath(project, appFile, 'components/auth/LoginForm.vue')}' — wyrenderuj go na /login wewnątrz <AuthBoundary mode="guest">.`,
+      )
+    }
   }
 
-  steps.push(
-    `Ustaw ${ENV_KEY} w .env (wzór: .env.example). Trasy chronione owiń w <AuthBoundary> (np. w layoucie).`,
-  )
+  const envStep = project.env.hasValue
+    ? null
+    : `Ustaw ${project.env.key} w .env (wzór: .env.example).`
+  const boundaryStep = wiring.boundary
+    ? null
+    : 'Trasy chronione owiń w <AuthBoundary> (np. w layoucie).'
+  const tail = [envStep, boundaryStep].filter((step): step is string => step !== null)
+  if (tail.length > 0) steps.push(tail.join(' '))
   return steps
 }
 
+// Formats the files written in this run with the repo's prettier (local install + config).
+function formatFiles(project: ProjectInfo, paths: string[], options: InitOptions): string {
+  if (!project.prettier) {
+    return 'brak prettier w repo — pliki w stylu paczki (pojedyncze cudzysłowy, bez średników)'
+  }
+  if (options.skipFormat)
+    return `prettier pominięty (--skip-format; konfiguracja: ${project.prettier.config})`
+  if (options.dryRun || paths.length === 0) return `prettier repo (${project.prettier.config})`
+  try {
+    execFileSync(process.execPath, [project.prettier.bin, '--write', ...paths], {
+      cwd: project.root,
+      stdio: 'pipe',
+    })
+    return `sformatowano prettierem repo (${project.prettier.config})`
+  } catch (error) {
+    const message = error instanceof Error ? error.message.split('\n')[0] : String(error)
+    return `prettier nie zadziałał (${message}) — pliki w stylu paczki`
+  }
+}
+
 export function runInit(options: InitOptions): InitResult {
-  const project = detectProject(options.cwd, options.framework)
+  const project = detectProject(options.cwd, {
+    framework: options.framework,
+    envVar: options.envVar,
+  })
   const actions: FileAction[] = []
   const warnings: string[] = []
 
@@ -368,12 +548,24 @@ export function runInit(options: InitOptions): InitResult {
           : undefined,
     })
     const warning = checkExisting(spec, current, path)
-    if (warning) warnings.push(warning)
+    if (warning) {
+      warnings.push(
+        spec.target === 'lib/auth.ts'
+          ? `${warning}\n\n    Fragment do wklejenia${/on\(\s*['"]login-error/.test(current) ? ' (zastąp nim obecny listener login-error)' : ''}:\n\n${libAuthSnippet(project, options.templatesDir, path)}`
+          : warning,
+      )
+    }
   }
 
-  actions.push(updateEnvExample(project.root, options.dryRun))
+  actions.push(updateEnvExample(project, options.dryRun))
 
-  return { project, actions, warnings, manualSteps: manualSteps(project, actions) }
+  const written = actions
+    .filter((action) => action.status === 'created' || action.status === 'overwritten')
+    .map((action) => action.path)
+    .filter((path) => /\.(?:ts|tsx|vue)$/.test(path))
+  const formatting = formatFiles(project, written, options)
+
+  return { project, actions, warnings, manualSteps: manualSteps(project, actions), formatting }
 }
 
 const STATUS_LABEL: Record<FileStatus, string> = {
@@ -393,7 +585,13 @@ const STATUS_LABEL_DRY_RUN: Record<FileStatus, string> = {
   appended: 'dopiszę',
 }
 
-export function formatReport(result: InitResult, options: Pick<InitOptions, 'dryRun'>): string[] {
+export interface ReportContext {
+  dryRun: boolean
+  // Path to AI_INTEGRATION.md shipped with the package (relative to the project), if any.
+  guidePath?: string | null
+}
+
+export function formatReport(result: InitResult, options: ReportContext): string[] {
   const { project } = result
   const lines: string[] = []
   lines.push('@musikhood-dev/auth-client init')
@@ -403,12 +601,29 @@ export function formatReport(result: InitResult, options: Pick<InitOptions, 'dry
   lines.push(
     `  importy:   ${project.alias ? `alias ${project.alias} (tsconfig)` : 'ścieżki względne (brak aliasu w tsconfig)'}`,
   )
+  const uiLabel =
+    project.ui.kind === 'shadcn'
+      ? `${project.framework === 'vue' ? 'shadcn-vue' : 'shadcn/ui'} (${project.ui.dir})`
+      : `bez zależności UI — ${project.ui.reason}`
+  lines.push(`  UI:        ${uiLabel}${project.tailwind ? ', Tailwind' : ''}`)
+  const toast = project.toast
+  const unused = project.unusedToastDeps.length
+    ? ` (${project.unusedToastDeps.join(', ')} w package.json, ale nieużywany — pominięty)`
+    : ''
   lines.push(
-    `  UI:        ${project.ui.kind === 'shadcn' ? `shadcn/ui (${project.ui.dir})` : `bez zależności UI — ${project.ui.reason}`}${project.tailwind ? ', Tailwind' : ''}`,
+    `  toast:     ${
+      toast
+        ? `${toast.kind === 'use-toast' ? 'shadcn use-toast' : toast.kind} — ${toast.appModule ? `${project.alias ?? ''}${toast.module}` : toast.module} (wykryto: ${toast.source})`
+        : 'nie wykryto — miejsce do podpięcia w lib/auth.ts (reportAuthError)'
+    }${unused}`,
   )
-  lines.push(
-    `  toast:     ${project.toastModule ?? 'nie wykryto — miejsce do podpięcia w lib/auth.ts (reportAuthError)'}`,
-  )
+  lines.push(`  API URL:   ${project.env.key} (źródło: ${project.env.source})`)
+  if (project.loginPage) {
+    lines.push(
+      `  logowanie: istniejąca strona ${project.loginPage.pageFile ?? '?'} (trasa w ${project.loginPage.routeFile}) — bez LoginForm${project.loginPage.mfaStep ? ', krok kodu 2FA już jest' : ''}`,
+    )
+  }
+  lines.push(`  styl:      ${result.formatting}`)
   lines.push('')
 
   const labels = options.dryRun ? STATUS_LABEL_DRY_RUN : STATUS_LABEL
@@ -425,14 +640,21 @@ export function formatReport(result: InitResult, options: Pick<InitOptions, 'dry
   }
 
   lines.push('')
-  lines.push('Dalej ręcznie:')
-  result.manualSteps.forEach((step, index) => {
-    lines.push('')
-    lines.push(`${index + 1}. ${step}`)
-  })
+  if (result.manualSteps.length === 0) {
+    lines.push('Dalej ręcznie: nic — wpięcie jest już kompletne.')
+  } else {
+    lines.push('Dalej ręcznie:')
+    result.manualSteps.forEach((step, index) => {
+      lines.push('')
+      lines.push(`${index + 1}. ${step}`)
+    })
+  }
   lines.push('')
   lines.push(
-    'Backend (panel w auth-panelu, bundle): https://github.com/musikhood/auth-client-bundle/blob/main/INTEGRATION.md',
+    `Instrukcja integracji (dla agenta AI): ${options.guidePath ?? `node_modules/@musikhood-dev/auth-client/${AI_GUIDE}`}`,
+  )
+  lines.push(
+    'Backend z bundlem: vendor/musikhood/auth-client-bundle/AI_INTEGRATION.md (bin/console auth-client:doctor)',
   )
   return lines
 }

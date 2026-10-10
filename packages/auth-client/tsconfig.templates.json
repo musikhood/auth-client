@@ -9,8 +9,10 @@
     "types": ["vitest/globals"],
     "paths": {
       "@@/lib/*": ["./templates/shared/lib/*"],
-      "@musikhood-dev/auth-client": ["./src/index.ts"]
+      "@@/components/auth/*": ["./templates/react-plain/components/auth/*"],
+      "@musikhood-dev/auth-client": ["./src/index.ts"],
+      "@musikhood-dev/auth-client/react": ["./src/react.ts"]
     }
   },
-  "include": ["src/cli/templates.behavior.test.tsx"]
+  "include": ["src/cli/templates.behavior.test.tsx", "templates.env.d.ts"]
 }

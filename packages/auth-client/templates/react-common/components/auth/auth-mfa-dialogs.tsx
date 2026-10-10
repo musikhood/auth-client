@@ -3,7 +3,8 @@ import { MfaEnrollmentRequiredDialog } from '@@/components/auth/mfa-enrollment-r
 import { MfaStepUpDialog } from '@@/components/auth/mfa-step-up-dialog'
 
 // Global 2FA dialogs (403 mfa_step_up / mfa_enrollment_required on any request).
-// Render once inside <AuthProvider>; they open only while the user is authenticated.
+// Render once inside <AuthProvider> (also outside <AuthBoundary>, e.g. in root.tsx); they open
+// only in the 2FA step-up / enrollment stage.
 export function AuthMfaDialogs() {
   return (
     <>
